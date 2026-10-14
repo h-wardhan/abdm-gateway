@@ -10,7 +10,7 @@ def request_aadhaar_otp(enc_aadhaar):
         "scope": ["abha-enrol"],
         "loginHint": "aadhaar",
         "loginId": enc_aadhaar,
-        "otpSystem": "aadhaar",
+        "otpSystem": "aadhaar", 
     }, endpoint_name="enrollment/request/otp[aadhaar]")
 
 

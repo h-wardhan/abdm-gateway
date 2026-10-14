@@ -1,0 +1,41 @@
+# Local stack: Postgres + Redis (+ the app). Not a production deployment.
+#   docker compose up -d db redis      -> then run the app with `python run.py`
+#   docker compose up --build          -> everything in containers
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: abdm
+      POSTGRES_PASSWORD: abdm
+      POSTGRES_DB: abdm_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U abdm -d abdm_gateway"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://abdm:abdm@db:5432/abdm_gateway
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    profiles: ["app"]
+
+volumes:
+  pgdata:

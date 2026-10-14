@@ -7,7 +7,7 @@ BASE = "/abha/api/v3/enrollment"
 def request_aadhaar_otp(enc_aadhaar):
     return abdm_request("POST", f"{BASE}/request/otp", json={
         "txnId": "",
-        "scope": ["abha-enrol"],
+        "scope": ["abha-enrol"], 
         "loginHint": "aadhaar",
         "loginId": enc_aadhaar,
         "otpSystem": "aadhaar", 

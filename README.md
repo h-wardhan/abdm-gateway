@@ -20,7 +20,7 @@ Documentation:
 - [docs/error-codes.md](docs/error-codes.md): every error code
 - [docs/imedicus-migration.md](docs/imedicus-migration.md): i-medicus: VCDoctor path → gateway path, `.env`
 - [docs/postman_collection.json](docs/postman_collection.json): Postman collection (regenerate with `python scripts/build_postman.py`)
-- Swagger UI at `/docs` on a running gateway
+- Live gateway: https://abdm-gateway.chickenkiller.com (Swagger UI: https://abdm-gateway.chickenkiller.com/docs)
 
 ---
 

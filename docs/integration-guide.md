@@ -4,7 +4,8 @@ This guide shows how a client application integrates with abdm-gateway for ABDM 
 ABHA creation, ABHA login, and fetching the profile, card and QR. The API is plain HTTPS + JSON,
 so any stack works. Examples are given in curl, PHP (Laravel/Guzzle), Node.js, Java and C#.
 
-- Swagger UI: `{baseUrl}/docs`. OpenAPI spec: `{baseUrl}/swagger.json`.
+- Base URL (`{baseUrl}`): `https://abdm-gateway.chickenkiller.com`. For local development, use `http://localhost:5000`.
+- Swagger UI: https://abdm-gateway.chickenkiller.com/docs. OpenAPI spec: https://abdm-gateway.chickenkiller.com/swagger.json.
 - Postman: import [postman_collection.json](postman_collection.json) and set `baseUrl`, `clientId` and `clientSecret`.
 
 ## 1. Get credentials

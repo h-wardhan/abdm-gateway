@@ -54,7 +54,7 @@ collection = {
         "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     },
     "variable": [
-        {"key": "baseUrl", "value": "http://localhost:5000"},
+        {"key": "baseUrl", "value": "https://abdm-gateway.chickenkiller.com"},
         {"key": "clientId", "value": ""},
         {"key": "clientSecret", "value": ""},
         {"key": "accessToken", "value": ""},

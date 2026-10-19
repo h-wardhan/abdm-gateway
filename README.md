@@ -189,6 +189,11 @@ Key behaviour:
 - **Encryption:** Aadhaar, OTP, mobile, email, ABHA number/address and index are RSA-OAEP encrypted by the gateway
   with the ABDM public key, which is fetched from ABDM and cached. Clients send plain values over HTTPS.
 - **txnId ownership:** a txnId belongs to the client app that started the flow. Any other client gets `403 TXN_FORBIDDEN`.
+- **Duplicate requests:** while a POST is being processed, the same POST from the same client (same path and body)
+  gets `409 DUPLICATE_REQUEST`, so a double click or client retry cannot send two OTPs. Once it finishes, it can be sent again.
+  Clients that want safe retries can also send an `Idempotency-Key` header: a repeat with the same key gets the stored
+  response (header `Idempotent-Replayed: true`) without calling ABDM again. Responses are kept for `IDEMPOTENCY_TTL_SECONDS`;
+  errors are not kept, so a retry runs again. With several Gunicorn workers, set `REDIS_URL` so all workers share the locks.
 - **Wrong OTP on a verify:** HTTP 200, `success: false`, `data.authResult: "failed"`.
 - **Input aliases:** the gateway accepts aliases for some fields (`otp`/`otpValue`/`OTP`, `mobileNumber`/`mobilenumber`,
   `scope`/`scop`/`authMethod`) and ignores unknown keys.

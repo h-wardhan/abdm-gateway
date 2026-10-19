@@ -54,6 +54,12 @@ class NotFoundError(AppError):
     default_message = "Resource not found"
 
 
+class ConflictError(AppError):
+    status = 409
+    code = "CONFLICT"
+    default_message = "The request conflicts with another request"
+
+
 class RateLimitedError(AppError):
     status = 429
     code = "RATE_LIMITED"

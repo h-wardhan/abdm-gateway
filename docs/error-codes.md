@@ -26,6 +26,7 @@ request in `logs/app.log`, `logs/abdm.log`, `api_audit_logs` and `abdm_error_log
 | 400 | `INVALID_TXN_ID` | The `txnId` is malformed. |
 | 400 | `INVALID_AUTH_METHOD` | The login method must be `mobile` / `aadhaar` (or `mobile-verify` / `aadhaar-verify`). |
 | 400 | `MISSING_X_TOKEN` | The ABHA user token is missing. Send `xToken` or the `X-Token` header. |
+| 400 | `INVALID_IDEMPOTENCY_KEY` | `Idempotency-Key` must be 1-128 characters: letters, digits, `.`, `_`, `:` or `-`. |
 | 401 | `MISSING_TOKEN` | No `Authorization` header. |
 | 401 | `INVALID_TOKEN` | The access token is malformed or has a bad signature. |
 | 401 | `TOKEN_EXPIRED` | The access token has expired. Create a new session or refresh. |
@@ -35,6 +36,8 @@ request in `logs/app.log`, `logs/abdm.log`, `api_audit_logs` and `abdm_error_log
 | 403 | `CLIENT_DISABLED` | This client app has been disabled. |
 | 403 | `IP_NOT_ALLOWED` | The caller's IP is not in the client's allowlist. |
 | 403 | `TXN_FORBIDDEN` | The `txnId` was started by another client app. |
+| 409 | `DUPLICATE_REQUEST` | The same POST (or the same `Idempotency-Key`) is still being processed. Wait for the first response instead of sending it again. |
+| 422 | `IDEMPOTENCY_KEY_REUSED` | This `Idempotency-Key` was already used for a different request. Use a new key per request. |
 | 404 | `NOT_FOUND` | Unknown route. |
 | 429 | `RATE_LIMITED` | The gateway's per-client (or per-IP, for session) rate limit was exceeded. |
 | 500 | `INTERNAL_ERROR` | Unexpected bug. Look up the `requestId` in the logs. |

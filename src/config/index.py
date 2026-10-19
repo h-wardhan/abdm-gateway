@@ -86,6 +86,10 @@ class Config:
     ABDM_PUBLIC_KEY_CACHE_SECONDS = _env_int("ABDM_PUBLIC_KEY_CACHE_SECONDS", 6 * 3600)
     # How long a txnId stays bound to the client that started it
     ABDM_TXN_TTL_SECONDS = _env_int("ABDM_TXN_TTL_SECONDS", 1800)
+    # Duplicate-request guard: max time a POST is held "in progress" (covers ABDM timeouts + one retry),
+    # and how long a response sent with an Idempotency-Key is kept for replay
+    IDEMPOTENCY_LOCK_SECONDS = _env_int("IDEMPOTENCY_LOCK_SECONDS", 60)
+    IDEMPOTENCY_TTL_SECONDS = _env_int("IDEMPOTENCY_TTL_SECONDS", 86400)
     _abdm = _abdm_settings()
     ABDM_ENV = _abdm["ABDM_ENV"]
     ABDM_GATEWAY_URL = _abdm["ABDM_GATEWAY_URL"]

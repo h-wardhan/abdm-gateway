@@ -1,5 +1,6 @@
 """
-Small key/value cache with TTL, used for the ABDM gateway token, ABDM public key and txn ownership.
+Small key/value cache with TTL, used for the ABDM gateway token, ABDM public key, txn ownership
+and the duplicate-request guard.
 
 Uses Redis when REDIS_URL is set, otherwise an in-process dict (fine for local dev / a single worker).
 """
@@ -30,6 +31,15 @@ class MemoryCache:
         with self._lock:
             self._data[key] = (value, time.monotonic() + ttl if ttl else None)
 
+    def add(self, key, value, ttl=None):
+        """Set only if the key is absent (or expired). Returns True if it was set."""
+        with self._lock:
+            item = self._data.get(key)
+            if item is not None and (item[1] is None or item[1] > time.monotonic()):
+                return False
+            self._data[key] = (value, time.monotonic() + ttl if ttl else None)
+            return True
+
     def delete(self, key):
         with self._lock:
             self._data.pop(key, None)
@@ -53,6 +63,9 @@ class RedisCache:
 
     def set(self, key, value, ttl=None):
         self._client.set(self._prefix + key, json.dumps(value), ex=int(ttl) if ttl else None)
+
+    def add(self, key, value, ttl=None):
+        return bool(self._client.set(self._prefix + key, json.dumps(value), ex=int(ttl) if ttl else None, nx=True))
 
     def delete(self, key):
         self._client.delete(self._prefix + key)
@@ -81,6 +94,9 @@ class Cache:
 
     def set(self, key, value, ttl=None):
         self._impl.set(key, value, ttl)
+
+    def add(self, key, value, ttl=None):
+        return self._impl.add(key, value, ttl)
 
     def delete(self, key):
         self._impl.delete(key)

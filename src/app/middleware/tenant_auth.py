@@ -12,6 +12,7 @@ from flask_restx import Resource
 
 from src.app.errors import AuthError, ForbiddenError
 from src.app.extensions import limiter
+from src.app.middleware.idempotency import idempotent
 from src.app.services.session_service import client_from_token
 
 
@@ -53,9 +54,10 @@ def _client_rate_limit():
 
 
 class TenantResource(Resource):
-    """Base class for authenticated endpoints: tenant auth first, then the per-client rate limit.
+    """Base class for authenticated endpoints: tenant auth first, then the per-client rate limit,
+    then the duplicate-request guard on POSTs.
 
     restx applies method_decorators in order, so the last one is outermost and runs first.
     """
 
-    method_decorators = [limiter.limit(_client_rate_limit), tenant_required]
+    method_decorators = [idempotent, limiter.limit(_client_rate_limit), tenant_required]

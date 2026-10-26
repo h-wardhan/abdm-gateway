@@ -37,5 +37,22 @@ services:
         condition: service_started
     profiles: ["app"]
 
+  # Delivers ABDM callbacks to the client apps and retries failures (same image, different command)
+  worker:
+    build: .
+    command: ["worker"]
+    healthcheck:
+      disable: true
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://abdm:abdm@db:5432/abdm_gateway
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    profiles: ["app"]
+
 volumes:
   pgdata:

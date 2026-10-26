@@ -4,6 +4,7 @@ from flask import Flask, redirect, request
 
 from src.app import models  # noqa: F401  (register models for migrations)
 from src.app.api import register_namespaces
+from src.app.callbacks.receiver import bp as callbacks_blueprint
 from src.app.cli import register_cli
 from src.app.errors import register_error_handlers
 from src.app.extensions import api, cache, db, limiter, migrate
@@ -59,6 +60,7 @@ def create_app(config_name=None):
         api._doc = False
     register_namespaces(api)
     api.init_app(app)
+    app.register_blueprint(callbacks_blueprint)
     register_error_handlers(app, api)
     register_cli(app)
 

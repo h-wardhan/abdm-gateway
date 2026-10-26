@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+extend-exclude = ["migrations", ".venv"]
+
+[tool.ruff.lint]
+# Real mistakes only: pyflakes (unused imports/variables, undefined names), syntax errors, import order
+select = ["F", "E9", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src", "tests"]

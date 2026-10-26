@@ -18,9 +18,11 @@ M2/M3 (care contexts, consent, health data exchange) come in later phases.
 Documentation:
 - [docs/integration-guide.md](docs/integration-guide.md): how any client app integrates (flows + curl / PHP / Node / Java / C# examples)
 - [docs/error-codes.md](docs/error-codes.md): every error code
+- [docs/callbacks.md](docs/callbacks.md): ABDM callbacks (webhooks) to client apps: how they are verified, routed, delivered and retried; the `hips`, `worker` and `abdm` commands
+- [deploy/README.md](deploy/README.md): CI/CD (GitHub Actions), server setup, deploy and rollback
 - [docs/imedicus-migration.md](docs/imedicus-migration.md): i-medicus: VCDoctor path → gateway path, `.env`
 - [docs/postman_collection.json](docs/postman_collection.json): Postman collection (regenerate with `python scripts/build_postman.py`)
-- Live gateway: https://abdm-gateway.chickenkiller.com (Swagger UI: https://abdm-gateway.chickenkiller.com/docs)
+- Live gateway: https://abdm-gateway.example.com (Swagger UI: https://abdm-gateway.example.com/docs)
 
 ---
 

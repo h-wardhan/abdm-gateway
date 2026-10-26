@@ -13,13 +13,22 @@ Point the gateway at it (.env):
     NHA_CLIENT_ID=mock-client
     NHA_CLIENT_SECRET=mock-secret
 
+It also plays ABDM for CALLBACKS: it publishes a JWKS at /api/hiecm/gateway/v3/certs and has
+POST /mock/callback, which signs a JWT and calls the gateway's callback URL like ABDM does:
+    curl -X POST http://127.0.0.1:5099/mock/callback -H "Content-Type: application/json" \
+      -d '{"path": "/api/v3/hip/patient/share", "body": {"metaData": {"hipId": "IN0110005723"}}}'
+(for the gateway to accept it, leave CALLBACK_AUTH_MODE=jwt and ABDM_GATEWAY_URL pointing at this mock)
+
 Test data: OTP 123456 is correct, anything else fails. Aadhaar ending in 0000 has no linked mobile
 (UIDAI error 111). Every mobile has one ABHA.
 """
 import base64
 import os
+import time
 import uuid
 
+import jwt
+import requests
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from flask import Flask, Response, jsonify, request
@@ -77,13 +86,64 @@ def require_x_token():
 
 @app.before_request
 def _check():
-    if request.path.endswith("/gateway/v3/sessions"):
+    # the sessions call, the JWKS and the status page are public; /mock/* is for the developer, not part of ABDM
+    if request.path == "/" or request.path.endswith(("/gateway/v3/sessions", "/gateway/v3/certs"))             or request.path.startswith("/mock/"):
         return None
     return require_gateway_token()
 
 
 def otp_ok(body):
     return dec(body["authData"]["otp"]["otpValue"]) == GOOD_OTP
+
+
+# ---- callbacks: this mock plays ABDM when it calls the gateway --------------------------
+
+CALLBACK_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+CALLBACK_KID = "mock-kid-1"
+
+
+@app.get("/api/hiecm/gateway/v3/certs")
+def certs():
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(CALLBACK_KEY.public_key(), as_dict=True)
+    jwk.update({"kid": CALLBACK_KID, "use": "sig", "alg": "RS256"})
+    return jsonify({"keys": [jwk]})
+
+
+@app.post("/mock/callback")
+def fire_callback():
+    """Body: {"path": "/api/v3/hip/patient/share", "body": {...}, "gatewayUrl": "http://127.0.0.1:5000",
+    "requestId": "optional", "sendToken": true}. Returns what the gateway answered."""
+    data = request.get_json(force=True)
+    token = jwt.encode({"exp": int(time.time()) + 300, "iss": "mock-abdm"}, CALLBACK_KEY, algorithm="RS256",
+                       headers={"kid": CALLBACK_KID})
+    headers = {"REQUEST-ID": data.get("requestId") or str(uuid.uuid4()), "X-CM-ID": "sbx",
+               "TIMESTAMP": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()), "Content-Type": "application/json"}
+    if data.get("sendToken", True):
+        headers["Authorization"] = f"Bearer {token}"
+    url = data.get("gatewayUrl", "http://127.0.0.1:5000").rstrip("/") + data["path"]
+    reply = requests.post(url, json=data.get("body", {}), headers=headers, timeout=10)
+    return jsonify({"gatewayStatus": reply.status_code, "gatewayBody": reply.json() if reply.content else None})
+
+
+@app.patch("/api/hiecm/gateway/v3/bridge/url")
+def bridge_url():
+    return jsonify({"message": "bridge url updated (mock)", "url": request.get_json(force=True).get("url")})
+
+
+@app.put("/devservice/v1/bridges/addUpdateServices")
+def add_services():
+    return jsonify({"message": "services updated (mock)", "count": len(request.get_json(force=True))})
+
+
+@app.get("/")
+def status_page():
+    """Opening the mock in a browser: every ABDM endpoint wants a gateway token, so this tells you it is alive."""
+    return jsonify({
+        "service": "mock ABDM (local development only, not the real ABDM)",
+        "status": "running",
+        "publicEndpoints": ["GET /api/hiecm/gateway/v3/certs (JWKS)", "POST /mock/callback (play ABDM calling the gateway)"],
+        "note": "all other ABDM endpoints answer 401 without a gateway token, like the real ABDM",
+    })
 
 
 @app.post("/api/hiecm/gateway/v3/sessions")

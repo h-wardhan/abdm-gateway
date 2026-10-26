@@ -52,7 +52,7 @@ Not changed:
 
 ## Environment (`i-medicus_web/src/.env`)
 ```
-ABDM_BASE_URL=https://abdm-gateway.chickenkiller.com/   # gateway URL (local dev: http://localhost:5000/)
+ABDM_BASE_URL=https://abdm-gateway.example.com/   # gateway URL (local dev: http://localhost:5000/)
 ABDM_CLIENT_ID=<from: flask clients create --name "i-medicus" --hip-id IN0110005723_240>
 ABDM_CLIENT_SECRET=<shown once by the same command>
 ABDM_CLINIC_ID=IN0110005723_240               # unchanged (HIP id, used from M2 onwards)

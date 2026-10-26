@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"   # the version the Docker image runs
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install ruff==0.17.1
+      - run: ruff check .
+
+  test:
+    name: Tests (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: abdm
+          POSTGRES_PASSWORD: abdm
+          POSTGRES_DB: abdm_gateway_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U abdm -d abdm_gateway_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Migrations apply cleanly and match the models (Postgres)
+        if: matrix.db == 'postgres'
+        env:
+          DATABASE_URL: postgresql://abdm:abdm@localhost:5432/abdm_gateway_test
+        run: |
+          flask --app wsgi db upgrade
+          flask --app wsgi db check
+          flask --app wsgi db downgrade base
+          flask --app wsgi db upgrade
+
+      - name: Tests, 100 % line and branch coverage on the callback / outbox code
+        env:
+          TEST_DATABASE_URL: ${{ matrix.db == 'postgres' && 'postgresql://abdm:abdm@localhost:5432/abdm_gateway_test' || '' }}
+        run: >
+          pytest -q
+          --cov=src.app.callbacks --cov=src.app.outbox --cov=src.app.api.v1.hips --cov=src.app.abdm.fidelius
+          --cov-report=term-missing --cov-fail-under=100
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: abdm-gateway:ci
+      - name: No secrets or local state in the image
+        run: |
+          docker run --rm --entrypoint sh abdm-gateway:ci -c '
+            for f in .env instance/abdm_gateway.db firebase-key.json; do
+              if [ -e "/app/$f" ]; then echo "found /app/$f in the image"; exit 1; fi
+            done
+            test "$(id -u)" != "0"
+          '
+      - name: The image starts and serves /health
+        run: |
+          docker run -d --name gw -p 5000:5000 \
+            -e SECRET_KEY=ci -e JWT_SECRET_KEY=ci -e ABDM_ENV=sbx abdm-gateway:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5000/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs gw
+          exit 1
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    continue-on-error: true   # report only, for now
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install pip-audit && pip-audit -r requirements.txt

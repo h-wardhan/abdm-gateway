@@ -18,9 +18,9 @@ Environment Variable Required:
       python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
 """
 
-import os
-import json
 import base64
+import json
+import os
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 

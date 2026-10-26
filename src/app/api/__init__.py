@@ -1,6 +1,7 @@
 from src.app.api.health import ns as health_ns
 from src.app.api.v1.auth import ns as auth_ns
 from src.app.api.v1.enrol import ns as enrol_ns
+from src.app.api.v1.hips import ns as hips_ns
 from src.app.api.v1.login import ns as login_ns
 from src.app.api.v1.profile import ns as profile_ns
 from src.app.api.v1.search import ns as search_ns
@@ -13,6 +14,7 @@ NAMESPACES = [
     (search_ns, "/api/v1/abha/search"),
     (login_ns, "/api/v1/abha/login"),
     (profile_ns, "/api/v1/abha"),
+    (hips_ns, "/api/v1/hips"),
 ]
 
 

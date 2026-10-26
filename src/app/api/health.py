@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from src.app.common.response import error_body, success
 from src.app.extensions import cache, db
+from src.app.outbox.engine import stats as outbox_stats
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,11 @@ class Ready(Resource):
             logger.warning("Readiness: cache check failed", extra={"error": str(exc)})
             checks["cache"] = "down"
         checks["cacheBackend"] = cache.backend
+        try:
+            checks["outbox"] = outbox_stats()
+        except Exception as exc:  # noqa: BLE001  (a backlog figure is informative, it must not fail readiness)
+            logger.warning("Readiness: could not read the outbox", extra={"error": str(exc)})
+            checks["outbox"] = "unknown"
         checks["abdmCredentials"] = (
             "configured"
             if current_app.config.get("NHA_CLIENT_ID") and current_app.config.get("NHA_CLIENT_SECRET")

@@ -7,3 +7,6 @@ __pycache__/
 instance/
 logs/
 *.db
+.ruff_cache/
+.coverage
+htmlcov/

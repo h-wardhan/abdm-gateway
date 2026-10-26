@@ -10,7 +10,7 @@ from src.app.abdm import crypto
 from src.app.abdm.http import abdm_request
 from src.app.errors import AbdmUnavailableError, AbdmUpstreamError
 from src.app.models import AbdmErrorLog, ApiAuditLog
-from tests.conftest import ABHA, GATEWAY, _PRIVATE_KEY, decrypt
+from tests.conftest import _PRIVATE_KEY, ABHA, GATEWAY, decrypt
 
 SESSION_URL = f"{GATEWAY}/api/hiecm/gateway/v3/sessions"
 CERT_URL = f"{ABHA}/abha/api/v3/profile/public/certificate"

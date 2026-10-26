@@ -5,7 +5,8 @@ from src.app.api.v1 import schemas as s
 from src.app.common.response import from_abdm, success
 from src.app.common.validators import body, x_token
 from src.app.middleware.tenant_auth import TenantResource
-from src.app.services import enrolment_service, profile_service as svc
+from src.app.services import enrolment_service
+from src.app.services import profile_service as svc
 
 ns = Namespace("ABHA Profile", path="/api/v1/abha", description=(
     "Profile, ABHA card and QR (M1). All need the ABHA user token from a login/enrol verify: "

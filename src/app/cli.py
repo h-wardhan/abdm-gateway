@@ -7,6 +7,7 @@ Management commands.
   flask clients disable <client_id>
   flask clients enable <client_id>
   flask audit purge [--days 90]
+  flask hips ... / flask abdm ... (see callbacks/cli.py), flask worker run (see outbox/cli.py)
 """
 from datetime import datetime, timedelta, timezone
 
@@ -14,8 +15,10 @@ import click
 from flask import current_app
 from flask.cli import AppGroup
 
+from src.app.callbacks.cli import abdm_cli, callbacks_cli, hips_cli
 from src.app.extensions import db
-from src.app.models import AbdmErrorLog, ApiAuditLog, ApiClient
+from src.app.models import AbdmErrorLog, ApiAuditLog, ApiClient, CallbackEvent, OutboxJob
+from src.app.outbox.cli import outbox_cli, worker_cli
 
 clients_cli = AppGroup("clients", help="Manage client apps (tenants) allowed to call the gateway.")
 audit_cli = AppGroup("audit", help="Audit log maintenance.")
@@ -101,10 +104,22 @@ def purge_audit(days):
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     audit = ApiAuditLog.query.filter(ApiAuditLog.created_at < cutoff).delete(synchronize_session=False)
     errors = AbdmErrorLog.query.filter(AbdmErrorLog.created_at < cutoff).delete(synchronize_session=False)
+    # Callbacks hold health data: keep them only CALLBACK_RETENTION_DAYS, and never delete one still being delivered
+    callback_cutoff = datetime.now(timezone.utc) - timedelta(days=current_app.config["CALLBACK_RETENTION_DAYS"])
+    jobs = OutboxJob.query.filter(OutboxJob.created_at < callback_cutoff, OutboxJob.status.in_(("done", "dead")))         .delete(synchronize_session=False)
+    events = CallbackEvent.query.filter(CallbackEvent.created_at < callback_cutoff,
+                                        CallbackEvent.status != "received").delete(synchronize_session=False)
     db.session.commit()
-    click.echo(f"Removed {audit} audit rows and {errors} ABDM error rows older than {days} days.")
+    click.echo(f"Removed {audit} audit rows and {errors} ABDM error rows older than {days} days, "
+               f"{events} callbacks and {jobs} finished jobs older than "
+               f"{current_app.config['CALLBACK_RETENTION_DAYS']} days.")
 
 
 def register_cli(app):
     app.cli.add_command(clients_cli)
     app.cli.add_command(audit_cli)
+    app.cli.add_command(hips_cli)
+    app.cli.add_command(callbacks_cli)
+    app.cli.add_command(outbox_cli)
+    app.cli.add_command(abdm_cli)
+    app.cli.add_command(worker_cli)

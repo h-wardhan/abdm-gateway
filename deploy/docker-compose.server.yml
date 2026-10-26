@@ -1,0 +1,57 @@
+# Server stack: the web app and the callback worker, from an image built by CI.
+#
+# It does NOT bring its own database by default. The gateway already holds client credentials
+# (i-medicus' Client-Id/Secret) in its database, so DATABASE_URL in the server's .env must point at
+# that database. Only if you want a Postgres/Redis managed by this compose file, start with:
+#     docker compose -f docker-compose.server.yml --profile bundled up -d
+# and set DATABASE_URL=postgresql://abdm:${POSTGRES_PASSWORD}@db:5432/abdm_gateway, REDIS_URL=redis://redis:6379/0
+#
+# Variables (server .env, next to this file):
+#   GATEWAY_IMAGE  image name   (default ghcr.io/h-wardhan/abdm-gateway)
+#   GATEWAY_TAG    image tag    (set by deploy.sh)
+#   APP_PORT       port on 127.0.0.1 the reverse proxy forwards to (default 5000)
+x-gateway: &gateway
+  image: ${GATEWAY_IMAGE:-ghcr.io/h-wardhan/abdm-gateway}:${GATEWAY_TAG:-develop}
+  env_file: .env
+  restart: unless-stopped
+  volumes:
+    - gateway-logs:/app/logs
+    - gateway-instance:/app/instance
+
+services:
+  app:
+    <<: *gateway
+    command: ["app"]
+    ports:
+      - "127.0.0.1:${APP_PORT:-5000}:5000"
+
+  worker:
+    <<: *gateway
+    command: ["worker"]
+    healthcheck:
+      disable: true
+
+  db:
+    image: postgres:16-alpine
+    profiles: ["bundled"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: abdm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env to use the bundled database}
+      POSTGRES_DB: abdm_gateway
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U abdm -d abdm_gateway"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["bundled"]
+    restart: unless-stopped
+
+volumes:
+  gateway-logs:
+  gateway-instance:
+  pgdata:

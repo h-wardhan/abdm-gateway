@@ -36,6 +36,33 @@ def _env_bool(name, default):
     return value.lower() in ("1", "true", "yes", "on")
 
 
+def _env_list(name, default=""):
+    """Comma separated env var -> list of lowercase, stripped, non-empty items."""
+    raw = _env(name, default) or ""
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def _env_int_list(name, default):
+    raw = _env(name, default)
+    try:
+        values = [int(item) for item in raw.split(",") if item.strip()]
+    except ValueError:
+        values = []
+    return values or [int(item) for item in default.split(",")]
+
+
+CALLBACK_AUTH_MODES = ("jwt", "observe", "off")
+
+
+def _callback_auth_mode(abdm_env):
+    mode = (_env("CALLBACK_AUTH_MODE", "jwt")).lower()
+    if mode not in CALLBACK_AUTH_MODES:
+        raise ValueError(f"CALLBACK_AUTH_MODE must be one of {list(CALLBACK_AUTH_MODES)}, got {mode!r}")
+    if abdm_env == "prod" and mode != "jwt":
+        raise ValueError("CALLBACK_AUTH_MODE must be 'jwt' when ABDM_ENV=prod")
+    return mode
+
+
 def _secret(name):
     value = _env(name)
     if value:
@@ -96,6 +123,30 @@ class Config:
     ABDM_ABHA_URL = _abdm["ABDM_ABHA_URL"]
     ABDM_X_CM_ID = _abdm["ABDM_X_CM_ID"]
 
+    # --- ABDM callbacks (ABDM -> gateway -> client app) ---
+    # jwt: reject callbacks without a valid ABDM JWT. observe: verify and log the result but never reject
+    # (use it on sandbox to see real callbacks first). off: skip verification (local mock only).
+    CALLBACK_AUTH_MODE = _callback_auth_mode(_abdm["ABDM_ENV"])
+    ABDM_JWKS_URL = _env("ABDM_JWKS_URL", _abdm["ABDM_GATEWAY_URL"] + "/api/hiecm/gateway/v3/certs")
+    ABDM_JWKS_CACHE_SECONDS = _env_int("ABDM_JWKS_CACHE_SECONDS", 6 * 3600)
+    # Public https URL of this gateway, registered with ABDM as the bridge URL
+    GATEWAY_PUBLIC_URL = _env("GATEWAY_PUBLIC_URL")
+    # Health-information pushes can be large, so callbacks get a bigger body limit than the rest of the API
+    CALLBACK_MAX_BYTES = _env_int("CALLBACK_MAX_BYTES", 10 * 1024 * 1024)
+    CALLBACK_ALLOW_HTTP = _env_bool("CALLBACK_ALLOW_HTTP", False)
+    CALLBACK_ALLOW_PRIVATE_URLS = _env_bool("CALLBACK_ALLOW_PRIVATE_URLS", False)
+    # Hosts a client may never register as a callback target (production webhooks), comma separated
+    CALLBACK_BLOCKED_HOSTS = _env_list("CALLBACK_BLOCKED_HOSTS", "app.i-medicus.in")
+    CALLBACK_RETENTION_DAYS = _env_int("CALLBACK_RETENTION_DAYS", 30)
+
+    # --- Outbox / retry worker ---
+    OUTBOX_POLL_SECONDS = _env_int("OUTBOX_POLL_SECONDS", 1)
+    OUTBOX_BATCH = _env_int("OUTBOX_BATCH", 20)
+    OUTBOX_MAX_ATTEMPTS = _env_int("OUTBOX_MAX_ATTEMPTS", 6)
+    OUTBOX_BACKOFF_SECONDS = _env_int_list("OUTBOX_BACKOFF_SECONDS", "2,10,60,300,900,3600")
+    OUTBOX_LOCK_SECONDS = _env_int("OUTBOX_LOCK_SECONDS", 60)
+    OUTBOX_HTTP_TIMEOUT = _env_int("OUTBOX_HTTP_TIMEOUT", 15)
+
     LOG_LEVEL = _env("LOG_LEVEL", "INFO")
     LOG_LEVEL_LIBS = _env("LOG_LEVEL_LIBS", "WARNING")
     LOG_DIR = _env("LOG_DIR", os.path.join(BASE_DIR, "logs"))
@@ -121,7 +172,15 @@ class ProductionConfig(Config):
 
 class TestingConfig(Config):
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    # CI runs the suite on Postgres too by setting TEST_DATABASE_URL
+    SQLALCHEMY_DATABASE_URI = os.environ.get("TEST_DATABASE_URL") or "sqlite:///:memory:"
+    # Pinned so a developer's .env can never change what the tests check
+    CALLBACK_AUTH_MODE = "jwt"
+    CALLBACK_ALLOW_HTTP = False
+    CALLBACK_ALLOW_PRIVATE_URLS = False
+    CALLBACK_BLOCKED_HOSTS = ["app.i-medicus.in"]
+    OUTBOX_BACKOFF_SECONDS = [2, 10, 60, 300, 900, 3600]
+    OUTBOX_MAX_ATTEMPTS = 6
     REDIS_URL = None
     RATELIMIT_STORAGE_URI = "memory://"
     RATELIMIT_ENABLED = False

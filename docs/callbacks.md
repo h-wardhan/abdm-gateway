@@ -50,6 +50,44 @@ never a host in `CALLBACK_BLOCKED_HOSTS` (production webhooks). Staging servers 
 `CALLBACK_ALLOW_HTTP=true`; local tests need `CALLBACK_ALLOW_PRIVATE_URLS=true`. The URL is checked again before
 every delivery.
 
+## One webhook for all your clinics
+
+A client app such as i-medicus has one webhook for all its clinics, and new clinics are added all the time, so
+registering every clinic one by one is not needed. Give the client app a **default webhook** once:
+
+```bash
+flask webhook set --client <client_id> --url https://dev.example.com/api/abdm-webhook   # prints the secret once
+flask webhook show
+flask webhook rotate-secret --client <client_id>
+```
+
+The first callback of a facility nobody registered is delivered to that URL and the gateway registers the facility
+for the client from then on (`flask hips list` marks it `(auto)`); it follows the client's webhook if that changes.
+This only works while **exactly one** active client has a default webhook. With two, an unknown facility is stored
+`unrouted` (nothing is lost): register it with `flask hips add` and `flask callbacks reroute`. A facility
+registered by hand always keeps its own URL.
+
+## Scan & Share (patient scans the clinic QR)
+
+```
+patient scans the clinic QR in the ABHA app
+ABDM ──POST /api/v3/hip/patient/share──▶ gateway ──▶ your webhook (profile of the patient, metaData.hipId = the clinic)
+your app saves the patient and gives a token number
+your app ──POST /api/v1/share/on-share──▶ gateway ──▶ ABDM (the patient sees the token)
+```
+
+```
+POST /api/v1/share/on-share        Authorization: <access token>
+{"requestId": "<request-id header of the callback>", "abhaAddress": "ravi@sbx", "tokenNumber": "5", "expiry": "1800"}
+```
+
+- You do not send the clinic: the gateway finds it from `requestId` (the scan it received). You can only answer scans
+  of your own clinics; anything else is `404 SHARE_REQUEST_NOT_FOUND`. ABDM gets the clinic's id in `X-HIP-ID`.
+- `expiry` (seconds, default 1800) is optional. `200 {"status": "sent"}`; `202 {"status": "queued"}` when ABDM
+  is down: the worker retries it.
+- The gateway sends it to `POST /api/hiecm/patient-share/v3/on-share` in ABDM's format
+  (`acknowledgement` + `response.requestId`).
+
 ## How the gateway finds the facility
 
 ABDM does not always put the facility id in the same place, so the gateway looks in this order: the `X-HIP-ID`

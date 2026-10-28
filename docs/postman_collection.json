@@ -1395,6 +1395,54 @@
           }
         }
       ]
+    },
+    {
+      "name": "7. Scan & Share",
+      "description": "",
+      "item": [
+        {
+          "name": "Answer a scan (on-share)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{accessToken}}"
+              },
+              {
+                "key": "Client-Id",
+                "value": "{{clientId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/share/on-share",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "share",
+                "on-share"
+              ]
+            },
+            "description": "Tells ABDM the token number of a patient who scanned a clinic QR. The clinic is found from requestId. 200 = sent, 202 = ABDM unreachable, queued for retry.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"<request-id header of the api/v3/hip/patient/share callback>\",\n  \"abhaAddress\": \"ramesh.kumar@sbx\",\n  \"tokenNumber\": \"5\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   ]
 }

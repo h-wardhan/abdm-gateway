@@ -54,6 +54,17 @@ EMAIL = Model("EmailVerificationRequest", {
     "xToken": fields.String(description="ABHA user token; or send the X-Token header"),
 })
 
+PROFILE_MOBILE_OTP = Model("ProfileMobileOtpRequest", {
+    "mobile": fields.String(required=True, example="9876543210", description="New mobile (aliases: mobileNumber, mobilenumber)"),
+    "xToken": fields.String(description="ABHA user token; or send the X-Token header"),
+})
+
+PROFILE_VERIFY = Model("ProfileVerifyRequest", {
+    "txnId": fields.String(required=True, description="txnId from the matching .../otp call"),
+    "otp": fields.String(required=True, example="123456", description="aliases: otpValue, OTP"),
+    "xToken": fields.String(description="ABHA user token; or send the X-Token header"),
+})
+
 MOBILE = Model("MobileRequest", {
     "mobileNumber": fields.String(required=True, example="9876543210"),
 })
@@ -90,7 +101,7 @@ ABHA_ADDRESS_VERIFY = Model("AbhaAddressVerifyRequest", {
 
 ALL = [
     ERROR_RESPONSE, GENERIC_RESPONSE, TXN_MESSAGE_RESPONSE, AADHAAR, ENROL_VERIFY, TXN_MOBILE, TXN_OTP,
-    ABHA_ADDRESS_CREATE, EMAIL, MOBILE, MOBILE_INDEX, SELECT_ACCOUNT, ABHA_NUMBER, ABHA_ADDRESS,
+    ABHA_ADDRESS_CREATE, EMAIL, PROFILE_MOBILE_OTP, PROFILE_VERIFY, MOBILE, MOBILE_INDEX, SELECT_ACCOUNT, ABHA_NUMBER, ABHA_ADDRESS,
     ABHA_ADDRESS_OTP, ABHA_ADDRESS_VERIFY,
 ]
 

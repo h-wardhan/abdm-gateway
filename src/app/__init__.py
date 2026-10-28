@@ -17,7 +17,9 @@ from src.config.logger import setup_logging
 def _configure_database(app):
     uri = app.config["SQLALCHEMY_DATABASE_URI"]
     if uri.startswith("sqlite:///") and ":memory:" not in uri:
-        os.makedirs(os.path.dirname(uri.replace("sqlite:///", "", 1)), exist_ok=True)
+        folder = os.path.dirname(uri.replace("sqlite:///", "", 1))
+        if folder:  # a bare file name like sqlite:///local.db has no folder to create
+            os.makedirs(folder, exist_ok=True)
     if uri.startswith("postgresql"):
         app.config.setdefault("SQLALCHEMY_ENGINE_OPTIONS", {
             "pool_size": 10,

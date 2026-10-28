@@ -17,6 +17,7 @@ import jwt
 import requests
 from flask import current_app
 
+from src.app.abdm.http import base_headers
 from src.app.errors import AuthError
 from src.app.extensions import cache
 
@@ -39,7 +40,7 @@ def _fetch_jwks():
     try:
         response = requests.get(
             current_app.config["ABDM_JWKS_URL"],
-            headers={"Accept": "application/json"},
+            headers=base_headers(),  # ABDM wants REQUEST-ID, TIMESTAMP and X-CM-ID here too
             timeout=(current_app.config["ABDM_TIMEOUT_CONNECT"], current_app.config["ABDM_TIMEOUT_READ"]),
         )
         response.raise_for_status()

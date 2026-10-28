@@ -20,6 +20,13 @@ def test_valid_token(app, jwks):
     assert claims["sub"] == "abdm"
 
 
+def test_jwks_request_carries_the_abdm_headers(app, jwks):
+    auth.verify(make_jwt())
+    [call] = [c for c in jwks.calls if c.request.url == app.config["ABDM_JWKS_URL"]]
+    headers = call.request.headers
+    assert headers["REQUEST-ID"] and headers["TIMESTAMP"] and headers["X-CM-ID"] == "sbx"
+
+
 def test_token_without_bearer_prefix(app, jwks):
     assert auth.verify(make_jwt())
 

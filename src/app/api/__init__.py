@@ -5,6 +5,7 @@ from src.app.api.v1.hips import ns as hips_ns
 from src.app.api.v1.login import ns as login_ns
 from src.app.api.v1.profile import ns as profile_ns
 from src.app.api.v1.search import ns as search_ns
+from src.app.api.v1.share import ns as share_ns
 
 # (namespace, path). Add new namespaces here; they all show up in Swagger.
 NAMESPACES = [
@@ -15,6 +16,7 @@ NAMESPACES = [
     (login_ns, "/api/v1/abha/login"),
     (profile_ns, "/api/v1/abha"),
     (hips_ns, "/api/v1/hips"),
+    (share_ns, "/api/v1/share"),
 ]
 
 

@@ -90,6 +90,15 @@ The ABHA user token expires after about 30 minutes. When it does, ABDM returns 4
 
 If any of these fails, the response is JSON in the error envelope.
 
+### 5.7 Scan & Share (answer a patient who scanned the clinic QR)
+ABDM calls your webhook (`api/v3/hip/patient/share`, see [callbacks.md](callbacks.md)). After you save the patient and
+choose a token number, tell ABDM so the patient sees it:
+
+`POST /api/v1/share/on-share` with `{"requestId": "<request-id header of the callback>", "abhaAddress": "...", "tokenNumber": "5"}`
+
+The clinic is found from `requestId`; you can only answer scans of your own clinics (`404` otherwise).
+`202 queued` means ABDM was unreachable and the gateway retries.
+
 ## 6. Examples
 
 ### curl

@@ -125,14 +125,29 @@ def fire_callback():
     return jsonify({"gatewayStatus": reply.status_code, "gatewayBody": reply.json() if reply.content else None})
 
 
+ON_SHARE_CALLS = []
+
+
+@app.post("/api/hiecm/patient-share/v3/on-share")
+def on_share():
+    """Scan & Share answer from a HIP (the token number the patient sees). Kept so a test can look at it."""
+    ON_SHARE_CALLS.append({"hipId": request.headers.get("X-HIP-ID"), "body": request.get_json(force=True)})
+    return jsonify({}), 202
+
+
+@app.get("/mock/on-share-calls")
+def on_share_calls():
+    return jsonify(ON_SHARE_CALLS)
+
+
 @app.patch("/api/hiecm/gateway/v3/bridge/url")
 def bridge_url():
     return jsonify({"message": "bridge url updated (mock)", "url": request.get_json(force=True).get("url")})
 
 
-@app.put("/devservice/v1/bridges/addUpdateServices")
+@app.post("/v1/bridges/MutipleHRPAddUpdateServices")
 def add_services():
-    return jsonify({"message": "services updated (mock)", "count": len(request.get_json(force=True))})
+    return jsonify({"message": "services updated (mock)", "count": len(request.get_json(force=True)["HRP"])})
 
 
 @app.get("/")
@@ -223,6 +238,29 @@ def email_link():
         return denied
     email = dec(request.get_json()["loginId"])
     return jsonify({"txnId": str(uuid.uuid4()), "message": f"Verification link has been sent to {email}"})
+
+
+@app.post("/abha/api/v3/profile/account/request/otp")
+def profile_request_otp():
+    denied = require_x_token()
+    if denied:
+        return denied
+    body = request.get_json()
+    value = dec(body["loginId"])
+    what = "mobile number" if body["loginHint"] == "mobile" else "email"
+    return jsonify({"txnId": str(uuid.uuid4()), "message": f"OTP sent to {what} {value[:2]}******"})
+
+
+@app.post("/abha/api/v3/profile/account/verify")
+def profile_verify():
+    denied = require_x_token()
+    if denied:
+        return denied
+    body = request.get_json()
+    txn = body["authData"]["otp"]["txnId"]
+    if not otp_ok(body):
+        return jsonify({"txnId": txn, "authResult": "failed", "message": "Please enter a valid OTP. Entered OTP is either expired or incorrect."})
+    return jsonify({"txnId": txn, "authResult": "success", "message": "Profile updated successfully"})
 
 
 # ---- search + login ------------------------------------------------------------------

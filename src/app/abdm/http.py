@@ -43,8 +43,9 @@ def bearer(token):
     return token if token.lower().startswith("bearer ") else f"Bearer {token}"
 
 
-def _base_url(target):
-    return current_app.config["ABDM_ABHA_URL"] if target == "abha" else current_app.config["ABDM_GATEWAY_URL"]
+def base_url(target):
+    return {"abha": current_app.config["ABDM_ABHA_URL"], "facility": current_app.config["ABDM_FACILITY_URL"]}.get(
+        target, current_app.config["ABDM_GATEWAY_URL"])
 
 
 def parse_abdm_error(response):
@@ -117,11 +118,12 @@ def abdm_request(
 ):
     """Call ABDM. Returns parsed JSON (dict/list), or the `requests.Response` when raw=True.
 
-    `path` is appended to ABDM_ABHA_URL (target="abha") or ABDM_GATEWAY_URL (target="gateway").
+    `path` is appended to ABDM_ABHA_URL (target="abha"), ABDM_FACILITY_URL (target="facility") or
+    ABDM_GATEWAY_URL (target="gateway").
     """
     from src.app.abdm.gateway_session import get_gateway_token, invalidate_gateway_token
 
-    url = _base_url(target) + path
+    url = base_url(target) + path
     endpoint = endpoint_name or path
     timeout = (current_app.config["ABDM_TIMEOUT_CONNECT"], current_app.config["ABDM_TIMEOUT_READ"])
     max_attempts = 2 if method.upper() == "GET" else 1

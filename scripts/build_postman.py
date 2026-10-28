@@ -115,6 +115,13 @@ collection = {
             req("ABHA card", "GET", "/api/v1/abha/profile/card?xToken={{xToken}}"),
             req("ABHA QR code", "GET", "/api/v1/abha/profile/qr?xToken={{xToken}}"),
         ]),
+        folder("7. Scan & Share", [
+            req("Answer a scan (on-share)", "POST", "/api/v1/share/on-share",
+                {"requestId": "<request-id header of the api/v3/hip/patient/share callback>",
+                 "abhaAddress": "ramesh.kumar@sbx", "tokenNumber": "5"},
+                description="Tells ABDM the token number of a patient who scanned a clinic QR. The clinic is found "
+                            "from requestId. 200 = sent, 202 = ABDM unreachable, queued for retry."),
+        ]),
     ],
 }
 

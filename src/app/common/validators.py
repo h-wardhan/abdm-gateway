@@ -6,7 +6,7 @@ mobileNumber / mobilenumber), so `pick()` accepts aliases.
 """
 import re
 
-from flask import request
+from flask import g, request
 
 from src.app.errors import ValidationError
 from src.utils.aadhaar_validator import normalize_aadhaar_digits, validate_aadhaar_number
@@ -102,6 +102,7 @@ def x_token(data=None):
         request.args.get("xToken")
         or request.headers.get("X-Token")
         or (pick(data or {}, "xToken", "x_token") if data else None)
+        or getattr(g, "user_token", None)  # the ABHA token sent in Authorization (tenant_or_credentials_required)
     )
     token = (token or "").strip()
     if token.lower().startswith("bearer "):

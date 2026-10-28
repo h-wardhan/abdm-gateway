@@ -32,3 +32,24 @@ def get_phr_card(x_token):
 def get_qr_code(x_token):
     headers = {**_x(x_token), "Accept": "*/*"}
     return abdm_request("GET", f"{ACCOUNT}/qrCode", headers=headers, raw=True, endpoint_name="profile/account/qrCode")
+
+
+# Changing the mobile / verifying the email of an existing ABHA: OTP to the new value, then verify.
+# Both need the ABHA user token; the scope names what is being verified.
+PROFILE_SCOPES = {"mobile": ["abha-profile", "mobile-verify"], "email": ["abha-profile", "email-verify"]}
+
+
+def request_profile_otp(x_token, kind, enc_value):
+    return abdm_request("POST", f"{ACCOUNT}/request/otp", json={
+        "scope": PROFILE_SCOPES[kind],
+        "loginHint": kind,
+        "loginId": enc_value,
+        "otpSystem": "abdm",
+    }, headers=_x(x_token), endpoint_name=f"profile/account/request/otp[{kind}]")
+
+
+def verify_profile_otp(x_token, kind, txn_id, enc_otp):
+    return abdm_request("POST", f"{ACCOUNT}/verify", json={
+        "scope": PROFILE_SCOPES[kind],
+        "authData": {"authMethods": ["otp"], "otp": {"txnId": txn_id, "otpValue": enc_otp}},
+    }, headers=_x(x_token), endpoint_name=f"profile/account/verify[{kind}]")

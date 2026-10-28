@@ -7,7 +7,7 @@ Management commands.
   flask clients disable <client_id>
   flask clients enable <client_id>
   flask audit purge [--days 90]
-  flask hips ... / flask abdm ... (see callbacks/cli.py), flask worker run (see outbox/cli.py)
+  flask hips ... / flask webhook ... / flask abdm ... (see callbacks/cli.py), flask worker run (see outbox/cli.py)
 """
 from datetime import datetime, timedelta, timezone
 
@@ -15,7 +15,7 @@ import click
 from flask import current_app
 from flask.cli import AppGroup
 
-from src.app.callbacks.cli import abdm_cli, callbacks_cli, hips_cli
+from src.app.callbacks.cli import abdm_cli, callbacks_cli, hips_cli, webhook_cli
 from src.app.extensions import db
 from src.app.models import AbdmErrorLog, ApiAuditLog, ApiClient, CallbackEvent, OutboxJob
 from src.app.outbox.cli import outbox_cli, worker_cli
@@ -119,6 +119,7 @@ def register_cli(app):
     app.cli.add_command(clients_cli)
     app.cli.add_command(audit_cli)
     app.cli.add_command(hips_cli)
+    app.cli.add_command(webhook_cli)
     app.cli.add_command(callbacks_cli)
     app.cli.add_command(outbox_cli)
     app.cli.add_command(abdm_cli)

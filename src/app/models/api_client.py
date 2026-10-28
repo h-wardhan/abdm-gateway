@@ -38,6 +38,10 @@ class ApiClient(TimestampMixin, db.Model):
     # Comma-separated IPs; empty = any IP
     allowed_ips = db.Column(db.Text, nullable=True)
     last_used_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # Default webhook of the client app (one URL for all its clinics). ABDM callbacks for a facility that
+    # is not registered yet go here; the secret signs what is forwarded (stored encrypted, see callbacks/vault.py)
+    callback_url = db.Column(db.String(500), nullable=True)
+    webhook_secret_enc = db.Column(db.Text, nullable=True)
 
     @classmethod
     def create(cls, name, hip_id=None, rate_limit=None, allowed_ips=None):

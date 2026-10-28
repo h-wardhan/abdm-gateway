@@ -161,6 +161,8 @@ class Drill:
         match = re.search(r"Client-Id\s+:\s+(\S+)", out)
         self.check("client app created", match, out[-300:])
         client_id = match.group(1)
+        self.client_id = client_id
+        self.client_secret = re.search(r"Client-Secret\s+:\s+(\S+)", out).group(1)
         callback_url = f"http://127.0.0.1:{self.ports['client']}/api/abdm-webhook"
         out = self.run(*self.flask, "hips", "add", "--client", client_id, "--hip-id", HIP_ID, "--callback-url", callback_url)
         secret = re.search(r"Webhook secret\s+:\s+(\S+)", out)
@@ -234,8 +236,45 @@ class Drill:
         self.check("and the worker delivers it",
                    self.wait_until(lambda: self.query(f"select status from callback_events where id = {row[0]}")[0][0] == "delivered", 20))
 
+    def gateway_api(self, path, body, token=None):
+        headers = {"Content-Type": "application/json", **({"Authorization": token} if token else {})}
+        request = urllib.request.Request(f"http://127.0.0.1:{self.ports['gateway']}{path}", data=json.dumps(body).encode(),
+                                         headers=headers)
+        with urllib.request.urlopen(request, timeout=15) as reply:
+            return json.loads(reply.read())
+
+    def scenario_new_clinic_and_on_share(self):
+        self.step(8, "a NEW clinic scans, with the client's default webhook",
+                  "i-medicus has one webhook for all clinics, so a clinic nobody registered is routed to it and registered")
+        callback_url = f"http://127.0.0.1:{self.ports['client']}/api/abdm-webhook"
+        out = self.run(*self.flask, "webhook", "set", "--client", self.client_id, "--url", callback_url)
+        self.check("default webhook set for the client app", "Default webhook" in out, out[-300:])
+        new_hip = "IN-NEW-CLINIC-0001"
+        scan = {**PATIENT_SHARE, "metaData": {"hipId": new_hip, "context": "hip"}}
+        reply = self.abdm_calls_gateway(body=scan, request_id="req-newclinic-01")
+        self.check("gateway answers 202", reply["gatewayStatus"] == 202, str(reply))
+        self.check("the callback is delivered to the client app", self.wait_until(
+            lambda: self.query("select status from callback_events where request_id = 'req-newclinic-01'")[0][0]
+            == "delivered", 20), str(self.query("select status, error from callback_events")))
+        row = self.query(f"select auto_registered, is_active from hip_registrations where hip_id = '{new_hip}'")
+        self.check("the new clinic was registered by the gateway", row == [(1, 1)], str(row))
+
+        self.step(9, "the client app answers the scan (on-share)",
+                  "it sends the token number; the gateway finds the clinic from the requestId and tells ABDM")
+        session = self.gateway_api("/api/v1/auth/session", {"clientId": self.client_id, "clientSecret": self.client_secret})
+        token = session["data"]["accessToken"]
+        answer = self.gateway_api("/api/v1/share/on-share",
+                                  {"requestId": "req-newclinic-01", "abhaAddress": "ravi@sbx", "tokenNumber": "7"}, token)
+        self.check("gateway answers sent", answer["data"] == {"status": "sent", "hipId": new_hip}, str(answer))
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.ports['mock']}/mock/on-share-calls", timeout=5) as reply:
+            calls = json.loads(reply.read())
+        self.check("ABDM (the mock) received it for the right clinic with the token",
+                   len(calls) == 1 and calls[0]["hipId"] == new_hip
+                   and calls[0]["body"]["acknowledgement"]["profile"]["tokenNumber"] == "7"
+                   and calls[0]["body"]["response"]["requestId"] == "req-newclinic-01", str(calls))
+
     def scenario_queue_is_clean(self):
-        self.step(8, "look at the queue", "`flask outbox stats` is how you see whether anything is stuck")
+        self.step(10, "look at the queue", "`flask outbox stats` is how you see whether anything is stuck")
         out = self.run(*self.flask, "outbox", "stats")
         print("   " + out.strip().replace("\n", "\n   "))
         self.check("nothing pending, nothing dead", "pending   : 0" in out and "dead      : 0" in out, out)
@@ -295,6 +334,7 @@ def main():
         drill.scenario_duplicate()
         drill.scenario_forged()
         drill.scenario_unrouted_then_reroute()
+        drill.scenario_new_clinic_and_on_share()
         drill.scenario_queue_is_clean()
         ok = drill.finish()
         if args.keep:

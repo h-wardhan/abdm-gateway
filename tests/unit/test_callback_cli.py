@@ -13,7 +13,10 @@ from src.app.outbox import worker
 from tests.conftest import CALLBACK_URL, GATEWAY, HIP_ID
 
 BRIDGE = f"{GATEWAY}/api/hiecm/gateway/v3/bridge/url"
-SERVICES = f"{GATEWAY}/devservice/v1/bridges/addUpdateServices"
+FACILITY = "https://facilitysbx.abdm.gov.in"
+SERVICES = f"{FACILITY}/v1/bridges/MutipleHRPAddUpdateServices"
+SERVICES_LIST = f"{GATEWAY}/api/hiecm/gateway/v3/bridge-services"
+SERVICE = f"{GATEWAY}/api/hiecm/gateway/v3/bridge-service/serviceId/IN0110005723"
 
 
 @pytest.fixture
@@ -146,12 +149,38 @@ def test_services_add_dry_run_and_confirm(run, abdm):
     assert dry.exit_code == 0 and "Dry run" in dry.output and SERVICES in dry.output
     assert len(abdm.calls) == 0
 
-    abdm.add(responses.PUT, SERVICES, json={"ok": True}, status=200)
+    abdm.add(responses.POST, SERVICES, json={"ok": True}, status=200)
     res = run("abdm", "services", "add", "--hip-id", HIP_ID, "--name", "Clinic", "--type", "HIU", "--confirm")
     assert res.exit_code == 0, res.output
-    put = [c for c in abdm.calls if c.request.method == "PUT"][0]
-    assert json.loads(put.request.body) == [
-        {"id": HIP_ID, "name": "Clinic", "type": "HIU", "active": True, "alias": [HIP_ID]}]
+    post = [c for c in abdm.calls if c.request.url == SERVICES][0]
+    assert post.request.headers["Authorization"] == "Bearer gw-token"
+    assert json.loads(post.request.body) == {
+        "facilityId": HIP_ID, "facilityName": "Clinic",
+        "HRP": [{"bridgeId": "test-client", "hipName": "Clinic", "type": "HIU", "active": True}]}
+
+
+def test_services_list_and_get_read_from_the_sandbox_gateway(run, abdm):
+    abdm.add(responses.GET, SERVICES_LIST, json=[{"id": HIP_ID, "type": "HIP"}], status=200)
+    abdm.add(responses.GET, SERVICE, json={"id": HIP_ID, "active": True}, status=200)
+    listed = run("abdm", "services", "list")
+    assert listed.exit_code == 0 and HIP_ID in listed.output
+    got = run("abdm", "services", "get", HIP_ID)
+    assert got.exit_code == 0 and '"active": true' in got.output
+
+
+def test_services_list_empty_and_outside_the_sandbox(run, app, abdm):
+    abdm.add(responses.GET, SERVICES_LIST, status=204)
+    assert "(empty response)" in run("abdm", "services", "list").output
+    app.config["ABDM_ENV"] = "prod"
+    res = run("abdm", "services", "list")
+    assert res.exit_code != 0 and "only works against the ABDM sandbox" in res.output
+
+
+def test_services_add_refuses_the_production_facility_registry(run, app, abdm):
+    app.config["ABDM_FACILITY_URL"] = "https://facility.abdm.gov.in"
+    res = run("abdm", "services", "add", "--hip-id", HIP_ID, "--name", "Clinic", "--confirm")
+    assert res.exit_code != 0 and "production host" in res.output
+    assert len(abdm.calls) == 0
 
 
 # ---- worker -------------------------------------------------------------------------------------------------

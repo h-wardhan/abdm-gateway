@@ -15,11 +15,12 @@ import socket
 from urllib.parse import urlsplit
 
 from flask import current_app
+from sqlalchemy.exc import IntegrityError
 
 from src.app.callbacks import vault
 from src.app.errors import ConflictError, NotFoundError, ValidationError
 from src.app.extensions import db
-from src.app.models import HipRegistration
+from src.app.models import ApiClient, HipRegistration
 
 _HIP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{2,63}$")
 
@@ -101,6 +102,8 @@ def upsert(client, hip_id, callback_url, name=None):
     reg = get(hip_id)
     if reg is not None and reg.api_client_id != client.id:
         raise ConflictError("This hipId is registered to another client", code="HIP_TAKEN")
+    if reg is not None:
+        reg.auto_registered = False  # an explicit URL: it no longer follows the client's default webhook
 
     secret = None
     if reg is None:
@@ -139,3 +142,64 @@ def single_active_registration():
     """The only active registration, when exactly one exists (fallback for callbacks without a hip id)."""
     rows = HipRegistration.query.filter_by(is_active=True).limit(2).all()
     return rows[0] if len(rows) == 1 else None
+
+
+# ---- the client's default webhook -----------------------------------------------------------------------------------
+# A client app (i-medicus) has one webhook for all its clinics and new clinics appear all the time, so a clinic
+# does not have to be registered one by one: the first callback of an unknown facility is routed to the only
+# client that has a default webhook, and the facility is registered for it from then on.
+
+def set_client_webhook(client, callback_url):
+    """Set the client's default webhook. Returns the plain secret when it is created (shown once), else None.
+
+    Facilities the gateway registered by itself follow the new URL."""
+    client.callback_url = validate_callback_url(callback_url)
+    secret = None
+    if not client.webhook_secret_enc:
+        secret = secrets.token_urlsafe(32)
+        client.webhook_secret_enc = vault.seal_secret(secret)
+    _sync_auto_registered(client)
+    db.session.commit()
+    return secret
+
+
+def rotate_client_webhook_secret(client):
+    secret = secrets.token_urlsafe(32)
+    client.webhook_secret_enc = vault.seal_secret(secret)
+    _sync_auto_registered(client)
+    db.session.commit()
+    return secret
+
+
+def _sync_auto_registered(client):
+    for reg in HipRegistration.query.filter_by(api_client_id=client.id, auto_registered=True):
+        reg.callback_url = client.callback_url
+        reg.webhook_secret_enc = client.webhook_secret_enc
+
+
+def default_client():
+    """The only active client with a default webhook, when exactly one exists."""
+    rows = ApiClient.query.filter(ApiClient.is_active.is_(True), ApiClient.callback_url.isnot(None),
+                                  ApiClient.webhook_secret_enc.isnot(None)).limit(2).all()
+    return rows[0] if len(rows) == 1 else None
+
+
+def register_from_default_webhook(hip_id):
+    """A callback for a facility nobody registered: register it for the default client. None when there is no
+    single default client or the facility id is not a valid one (the callback is then stored as unrouted)."""
+    client = default_client()
+    if client is None:
+        return None
+    try:
+        hip_id = validate_hip_id(hip_id)
+    except ValidationError:
+        return None
+    reg = HipRegistration(api_client_id=client.id, hip_id=hip_id, callback_url=client.callback_url,
+                          webhook_secret_enc=client.webhook_secret_enc, auto_registered=True)
+    db.session.add(reg)
+    try:
+        db.session.commit()
+    except IntegrityError:  # a callback of the same new facility was faster: use its registration
+        db.session.rollback()
+        return get(hip_id)
+    return reg

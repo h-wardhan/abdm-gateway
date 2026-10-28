@@ -76,6 +76,7 @@ jobs:
         run: >
           pytest -q
           --cov=src.app.callbacks --cov=src.app.outbox --cov=src.app.api.v1.hips --cov=src.app.abdm.fidelius
+          --cov=src.app.abdm.scan_share --cov=src.app.api.v1.share --cov=src.app.services.share_service
           --cov-report=term-missing --cov-fail-under=100
 
   docker:

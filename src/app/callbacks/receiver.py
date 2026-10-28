@@ -6,6 +6,8 @@ The actual delivery to the client app is done by the outbox worker (see outbox/e
 
 1. Authenticate the callback (ABDM's JWT, see callbacks/auth.py)
 2. Find the facility it is about and the client app that owns it (callbacks/routing.py, registry.py)
+   A facility nobody registered goes to the client's default webhook, when there is exactly one such client
+   (registry.register_from_default_webhook): new clinics need no registration.
 3. Drop it if ABDM already sent this REQUEST-ID for this path
 4. Store it (encrypted) and queue a forward job. With no matching facility the callback is stored as
    `unrouted` and logged as an error: it can be re-routed by hand, nothing is lost.
@@ -52,7 +54,7 @@ def _route(headers, body):
     """(registration or None, hip_id or None, reason when there is no registration)."""
     hip_id = resolve_hip_id(headers, body if isinstance(body, dict) else {})
     if hip_id:
-        registration = registry.get(hip_id)
+        registration = registry.get(hip_id) or registry.register_from_default_webhook(hip_id)
         if registration is None:
             return None, hip_id, "hip is not registered"
         if not registration.is_active:

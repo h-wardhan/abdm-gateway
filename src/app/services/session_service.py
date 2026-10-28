@@ -96,3 +96,12 @@ def refresh_session(refresh_token):
         raise ValidationError("refreshToken is required")
     client = client_from_token(refresh_token, expected_type="refresh")
     return client, issue_tokens(client)
+
+
+def authenticate_client(client_id, client_secret):
+    """The client behind Client-Id + Client-Secret headers. No tokens are issued: this is for calls that carry
+    an ABHA user token in `Authorization` (how i-medicus calls the mobile / email verification endpoints)."""
+    client = _active_client(client_id)
+    if not client.verify_secret(client_secret):
+        raise AuthError("Invalid client credentials", code="INVALID_CLIENT")
+    return client

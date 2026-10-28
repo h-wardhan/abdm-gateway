@@ -81,6 +81,7 @@ def _abdm_settings():
         "ABDM_GATEWAY_URL": _env("ABDM_GATEWAY_URL", gateway).rstrip("/"),
         "ABDM_ABHA_URL": _env("ABDM_ABHA_URL", abha).rstrip("/"),
         "ABDM_X_CM_ID": _env("ABDM_X_CM_ID", cm_id),
+        "ABDM_FACILITY_URL": _env("ABDM_FACILITY_URL", "https://facilitysbx.abdm.gov.in").rstrip("/"),
     }
 
 
@@ -122,6 +123,7 @@ class Config:
     ABDM_GATEWAY_URL = _abdm["ABDM_GATEWAY_URL"]
     ABDM_ABHA_URL = _abdm["ABDM_ABHA_URL"]
     ABDM_X_CM_ID = _abdm["ABDM_X_CM_ID"]
+    ABDM_FACILITY_URL = _abdm["ABDM_FACILITY_URL"]  # facility registry: links a facility (HIP) to our bridge
 
     # --- ABDM callbacks (ABDM -> gateway -> client app) ---
     # jwt: reject callbacks without a valid ABDM JWT. observe: verify and log the result but never reject

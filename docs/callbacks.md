@@ -88,6 +88,20 @@ POST /api/v1/share/on-share        Authorization: <access token>
 - The gateway sends it to `POST /api/hiecm/patient-share/v3/on-share` in ABDM's format
   (`acknowledgement` + `response.requestId`).
 
+### The clinic QR
+
+```
+POST /api/v1/share/qr        Authorization: <access token>
+{"hipId": "IN0810041408", "callbackUrl": "<optional, accepted for i-medicus>", "counterId": "<optional>"}
+-> {"success": true, "type": "Success", "data": "data:image/png;base64,...", "code": "IN0810041408",
+    "payload": {"hipId": "...", "hipName": "..."}, "requestId": "..."}
+```
+
+The body is the one i-medicus already sends and the answer keeps the shape its dashboard reads (`type`, `data` as
+`<img src>`). `payload` is the JSON the QR holds. Only your own registered clinics (`404 HIP_NOT_FOUND` otherwise).
+The payload layout (`hipId`, `hipName`, `counterId`) is built in `share_service.facility_qr`; check it against ABDM's
+Scan & Share spec in the sandbox.
+
 ## How the gateway finds the facility
 
 ABDM does not always put the facility id in the same place, so the gateway looks in this order: the `X-HIP-ID`

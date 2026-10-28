@@ -7,8 +7,10 @@ its own facilities.
 """
 import json
 
+import segno
+
 from src.app.abdm import scan_share
-from src.app.callbacks import vault
+from src.app.callbacks import registry, vault
 from src.app.common.validators import abha_address, pick, require
 from src.app.errors import NotFoundError, ValidationError
 from src.app.models import CallbackEvent
@@ -56,3 +58,22 @@ def respond(client, data):
                             code="SHARE_REQUEST_NOT_FOUND")
     body = scan_share.build_on_share_body(address, token, request_id, _context(event), expiry)
     return scan_share.send_on_share(event.hip_id, body, client.id), event.hip_id
+
+
+def facility_qr(client, hip_id, counter_id=None):
+    """The QR a clinic puts on the desk; the patient scans it in the ABHA app (Scan & Share).
+
+    It carries the facility id (and optionally a counter), so the scan callback names the clinic.
+    Only a facility registered to `client` is accepted. Returns (payload dict, PNG as a data URI)."""
+    reg = registry.get_for_client(client, registry.validate_hip_id(hip_id))
+    payload = {"hipId": reg.hip_id}
+    if reg.name:
+        payload["hipName"] = reg.name
+    if counter_id:
+        counter_id = str(counter_id).strip()
+        if len(counter_id) > 32:
+            raise ValidationError("counterId must be at most 32 characters", code="INVALID_COUNTER_ID",
+                                  details={"field": "counterId"})
+        payload["counterId"] = counter_id
+    image = segno.make(json.dumps(payload, separators=(",", ":")), error="m").png_data_uri(scale=8, border=4)
+    return payload, image

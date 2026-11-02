@@ -1,4 +1,7 @@
 from src.app.api.health import ns as health_ns
+from src.app.api.v1.account import ns as account_ns
+from src.app.api.v1.app_compat import ns as app_compat_ns
+from src.app.api.v1.benefit import ns as benefit_ns
 from src.app.api.v1.auth import ns as auth_ns
 from src.app.api.v1.enrol import ns as enrol_ns
 from src.app.api.v1.hips import ns as hips_ns
@@ -15,6 +18,9 @@ NAMESPACES = [
     (search_ns, "/api/v1/abha/search"),
     (login_ns, "/api/v1/abha/login"),
     (profile_ns, "/api/v1/abha"),
+    (account_ns, "/api/v1/abha/account"),
+    (benefit_ns, "/api/v1/abha/benefit"),
+    (app_compat_ns, "/api/v1/abha/app"),
     (hips_ns, "/api/v1/hips"),
     (share_ns, "/api/v1/share"),
 ]

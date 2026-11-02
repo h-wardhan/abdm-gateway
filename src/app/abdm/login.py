@@ -59,3 +59,18 @@ def verify_abha_address_otp(scope, txn_id, enc_otp):
         "scope": scope,
         "authData": {"authMethods": ["otp"], "otp": {"txnId": txn_id, "otpValue": enc_otp}},
     }, endpoint_name="phr/web/login/abha/verify")
+
+
+# ---- Generic OTP/verify variants: forgot ABHA, retrieval, biometrics, password ----------------------------------
+
+def request_login_otp_for(path_base, scope, login_hint, enc_login_id, otp_system, name, txn_id=None):
+    """OTP/biometric challenge on the profile (ABHA number) or PHR (ABHA address) login family."""
+    payload = {"scope": scope, "loginHint": login_hint, "loginId": enc_login_id, "otpSystem": otp_system}
+    if txn_id:
+        payload["txnId"] = txn_id
+    return abdm_request("POST", f"{path_base}/request/otp", json=payload, endpoint_name=name)
+
+
+def verify_login_with(path_base, scope, auth_data, name):
+    return abdm_request("POST", f"{path_base}/verify", json={"scope": scope, "authData": auth_data},
+                        endpoint_name=name)

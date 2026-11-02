@@ -108,3 +108,93 @@ class AbhaAddressVerify(TenantResource):
     @ns.response(200, "Verified", s.GENERIC_RESPONSE)
     def post(self):
         return from_abdm(svc.verify_abha_address_otp(body()))
+
+
+# ---- forgot ABHA / retrieval of the enrolment number ---------------------------------------------------------
+
+@ns.route("/forgot/<string:method>/otp")
+@ns.doc(params={"method": {"description": "mobile | aadhaar", "enum": ["mobile", "aadhaar"]}})
+class ForgotOtp(TenantResource):
+    @ns.doc(description="Forgot ABHA: send an OTP to find the ABHA. Body: `mobile` or `aadhaarNumber`.")
+    @ns.response(200, "OTP sent", s.TXN_MESSAGE_RESPONSE)
+    def post(self, method):
+        return from_abdm(svc.send_forgot_otp(body(), method))
+
+
+@ns.route("/forgot/<string:method>/verify")
+@ns.doc(params={"method": {"description": "mobile | aadhaar (same as the OTP call)", "enum": ["mobile", "aadhaar"]}})
+class ForgotVerify(TenantResource):
+    @ns.doc(description="Verify the OTP. Returns the login result with the ABHA accounts found.")
+    @ns.expect(s.TXN_OTP, validate=False)
+    @ns.response(200, "Verified", s.GENERIC_RESPONSE)
+    def post(self, method):
+        return from_abdm(svc.verify_forgot_otp(body(), method))
+
+
+@ns.route("/retrieval/otp")
+class RetrievalOtp(TenantResource):
+    @ns.doc(description="Retrieve a lost enrolment number: OTP to the mobile. Body: `mobile`.")
+    @ns.expect(s.MOBILE, validate=False)
+    @ns.response(200, "OTP sent", s.TXN_MESSAGE_RESPONSE)
+    def post(self):
+        return from_abdm(svc.send_retrieval_otp(body()))
+
+
+@ns.route("/retrieval/verify")
+class RetrievalVerify(TenantResource):
+    @ns.doc(description="Verify the OTP. Returns the enrolment number(s) ABDM holds for this mobile.")
+    @ns.expect(s.TXN_OTP, validate=False)
+    @ns.response(200, "Verified", s.GENERIC_RESPONSE)
+    def post(self):
+        return from_abdm(svc.verify_retrieval_otp(body()))
+
+
+# ---- biometric login (fingerprint / face / iris) -------------------------------------------------------------
+_BIO = {"method": {"description": "fingerprint | face | iris", "enum": ["fingerprint", "face", "iris"]}}
+_PID_DOC = "`pid` is the device PID data, passed on unchanged."
+
+
+@ns.route("/abha-number/biometric/<string:method>/otp")
+@ns.doc(params=_BIO)
+class BiometricOtp(TenantResource):
+    @ns.doc(description="Start a biometric login for an ABHA number. Body: `abhaNumber`. Returns `txnId`.")
+    @ns.response(200, "Challenge", s.TXN_MESSAGE_RESPONSE)
+    def post(self, method):
+        return from_abdm(svc.send_biometric_otp(body(), method))
+
+
+@ns.route("/mobile/biometric/<string:method>/otp")
+@ns.doc(params=_BIO)
+class MobileBiometricOtp(TenantResource):
+    @ns.doc(description="Start a biometric login for the ABHA picked from search/mobile. Body: `txnId`, `index`.")
+    @ns.response(200, "Challenge", s.TXN_MESSAGE_RESPONSE)
+    def post(self, method):
+        return from_abdm(svc.send_mobile_biometric_otp(body(), method))
+
+
+@ns.route("/abha-number/biometric/<string:method>/verify", "/mobile/biometric/<string:method>/verify")
+@ns.doc(params=_BIO)
+class BiometricVerify(TenantResource):
+    @ns.doc(description="Finish the biometric login (ABHA number, or the mobile-search flow). Body: `txnId`, `pid`. "
+                        + _PID_DOC)
+    @ns.response(200, "Verified", s.GENERIC_RESPONSE)
+    def post(self, method):
+        return from_abdm(svc.verify_biometric(body(), method))
+
+
+@ns.route("/abha-address/biometric/<string:method>/otp")
+@ns.doc(params=_BIO)
+class AddressBiometricOtp(TenantResource):
+    @ns.doc(description="Start a biometric login for an ABHA address. Body: `abhaAddress`.")
+    @ns.response(200, "Challenge", s.TXN_MESSAGE_RESPONSE)
+    def post(self, method):
+        return from_abdm(svc.send_address_biometric_otp(body(), method))
+
+
+@ns.route("/abha-address/biometric/<string:method>/verify")
+@ns.doc(params=_BIO)
+class AddressBiometricVerify(TenantResource):
+    @ns.doc(description="Finish the biometric ABHA address login. Body: `txnId`, `pid`. " + _PID_DOC)
+    @ns.response(200, "Verified", s.GENERIC_RESPONSE)
+    def post(self, method):
+        return from_abdm(svc.verify_address_biometric(body(), method))

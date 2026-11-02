@@ -147,3 +147,124 @@ def verify_abha_address_otp(data):
     result = abdm.verify_abha_address_otp(["abha-address-login", verify_scope], txn_id, encrypt(otp))
     txn_service.record_from(result, "login_abha_address", "verified")
     return result
+
+
+# ---- forgot ABHA / retrieval of the enrolment number ---------------------------------------------------------
+# kind -> (login hint, scope, otpSystem); the verify call uses the same scope
+FORGOT = {
+    "mobile": ("mobile", ["abha-login", "mobile-verify"], "abdm"),
+    "aadhaar": ("aadhaar", ["abha-login", "aadhaar-verify"], "aadhaar"),
+}
+RETRIEVAL = ("mobile", ["abha-login", "mobile-verify", "retrieval"], "abdm")
+
+
+def _forgot_kind(method):
+    if method not in FORGOT:
+        raise ValidationError("method must be 'mobile' or 'aadhaar'", code="INVALID_AUTH_METHOD")
+    return FORGOT[method]
+
+
+def _identifier(hint, data):
+    if hint == "aadhaar":
+        return v.aadhaar(v.pick(data, "aadhaarNumber", "aadharNumber", "aadhaar"))
+    return v.mobile(v.pick(data, "mobileNumber", "mobilenumber", "mobile"))
+
+
+def _send_hint_otp(flow, spec, data):
+    hint, scope, otp_system = spec
+    result = abdm.request_login_otp(scope, hint, encrypt(_identifier(hint, data)), otp_system)
+    txn_service.record_from(result, flow, "otp_sent")
+    return result
+
+
+def _verify_hint_otp(flow, scope, data):
+    txn_id, otp = _otp_and_txn(data)
+    result = abdm.verify_login_otp(scope, txn_id, encrypt(otp))
+    txn_service.record_from(result, flow, "verified")
+    return result
+
+
+def send_forgot_otp(data, method):
+    return _send_hint_otp(f"forgot_{method}", _forgot_kind(method), data)
+
+
+def verify_forgot_otp(data, method):
+    return _verify_hint_otp(f"forgot_{method}", _forgot_kind(method)[1], data)
+
+
+def send_retrieval_otp(data):
+    return _send_hint_otp("retrieval", RETRIEVAL, data)
+
+
+def verify_retrieval_otp(data):
+    return _verify_hint_otp("retrieval", RETRIEVAL[1], data)
+
+
+# ---- biometric login (fingerprint / face / iris) -------------------------------------------------------------
+# method -> (verify scope token, ABDM authMethod, key carrying the PID)
+BIO_LOGIN = {
+    "fingerprint": ("aadhaar-bio-verify", "bio", "fingerPrintAuthPid"),
+    "face": ("aadhaar-face-verify", "face", "faceAuthPid"),
+    "iris": ("aadhaar-iris-verify", "iris", "irisAuthPid"),
+}
+PROFILE_LOGIN = "/abha/api/v3/profile/login"
+
+
+def _bio(method):
+    if method not in BIO_LOGIN:
+        raise ValidationError("method must be fingerprint, face or iris", code="INVALID_AUTH_METHOD")
+    return BIO_LOGIN[method]
+
+
+def send_biometric_otp(data, method):
+    """Start a biometric login for an ABHA number: ABDM returns a txnId to attach to the device PID."""
+    token, _, _ = _bio(method)
+    abha_number = v.abha_number(v.pick(data, "abhaNumber", "ABHANumber"))
+    result = abdm.request_login_otp_for(PROFILE_LOGIN, ["abha-login", token], "abha-number", encrypt(abha_number),
+                                        "aadhaar", f"profile/login/request/otp[{method}]")
+    txn_service.record_from(result, f"login_{method}", "challenge_sent")
+    return result
+
+
+def send_mobile_biometric_otp(data, method):
+    """Biometric login for an ABHA picked from search/mobile (txnId + index)."""
+    token, _, _ = _bio(method)
+    txn_id = v.txn_id(v.pick(data, "txnId"))
+    index = v.require(v.pick(data, "index"), "index")
+    txn_service.assert_owner(txn_id)
+    result = abdm.request_login_otp_for(PROFILE_LOGIN, ["abha-login", "search-abha", token], "index",
+                                        encrypt(str(index)), "aadhaar", f"profile/login/request/otp[{method}-index]",
+                                        txn_id=txn_id)
+    txn_service.record_from(result, f"login_{method}", "challenge_sent")
+    return result
+
+
+def send_address_biometric_otp(data, method):
+    token, _, _ = _bio(method)
+    address = v.abha_address(v.pick(data, "abhaAddress", "abha_address"))
+    result = abdm.request_login_otp_for(abdm.PHR, ["abha-login", token], "abha-address", encrypt(address),
+                                        "aadhaar", f"phr/web/login/abha/request/otp[{method}]")
+    txn_service.record_from(result, f"login_{method}_address", "challenge_sent")
+    return result
+
+
+def _biometric_auth(data, method):
+    token, auth_method, pid_key = _bio(method)
+    txn_id = v.txn_id(v.pick(data, "txnId"))
+    pid = v.require(v.pick(data, "pid", "pidData"), "pid")
+    txn_service.assert_owner(txn_id)
+    return ["abha-login", token], {"authMethods": [auth_method], auth_method: {"txnId": txn_id, pid_key: pid}}
+
+
+def verify_biometric(data, method):
+    scope, auth = _biometric_auth(data, method)
+    result = abdm.verify_login_with(PROFILE_LOGIN, scope, auth, f"profile/login/verify[{method}]")
+    txn_service.record_from(result, f"login_{method}", "verified")
+    return result
+
+
+def verify_address_biometric(data, method):
+    scope, auth = _biometric_auth(data, method)
+    result = abdm.verify_login_with(abdm.PHR, scope, auth, f"phr/web/login/abha/verify[{method}]")
+    txn_service.record_from(result, f"login_{method}_address", "verified")
+    return result

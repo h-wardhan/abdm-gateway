@@ -83,3 +83,75 @@ class AbhaAddress(TenantResource):
     @_doc
     def post(self):
         return from_abdm(svc.create_abha_address(body()))
+
+
+# ---- Driving licence -----------------------------------------------------------------------------------------
+
+@ns.route("/dl/otp")
+class DlOtp(TenantResource):
+    @ns.doc(description="Driving-licence enrolment, step 1: OTP to the mobile. Body: `mobile`.")
+    @ns.response(200, "OTP sent", s.TXN_MESSAGE_RESPONSE)
+    @_doc
+    def post(self):
+        return from_abdm(svc.send_dl_otp(body()))
+
+
+@ns.route("/dl/verify")
+class DlVerify(TenantResource):
+    @ns.doc(description="Step 2: verify the mobile OTP. Body: `txnId`, `otp`. Returns a txnId for `dl/create`.")
+    @ns.response(200, "Result", s.GENERIC_RESPONSE)
+    @_doc
+    def post(self):
+        return from_abdm(svc.verify_dl_otp(body()))
+
+
+@ns.route("/dl/create")
+class DlCreate(TenantResource):
+    @ns.doc(description="Step 3: create the ABHA from the licence. Body: `txnId`, `documentId`, `firstName`, "
+                        "`middleName`, `lastName`, `dob`, `gender`, `frontSidePhoto`, `backSidePhoto` (base64), "
+                        "`address`, `state`, `district`, `pinCode`.")
+    @ns.response(200, "Enrolment number / ABHA", s.GENERIC_RESPONSE)
+    @_doc
+    def post(self):
+        return from_abdm(svc.create_with_dl(body()))
+
+
+# ---- Biometric / demographic / child -------------------------------------------------------------------------
+
+@ns.route("/biometric/<string:method>")
+@ns.doc(params={"method": {"description": "fingerprint | face | iris", "enum": ["fingerprint", "face", "iris"]}})
+class BiometricEnrol(TenantResource):
+    @ns.doc(description="Create an ABHA with a biometric Aadhaar auth. Body: `aadhaarNumber`, `pid` (device PID "
+                        "data, passed on unchanged), `mobile`. Same result as `aadhaar/verify`.")
+    @ns.response(200, "ABHA created", s.GENERIC_RESPONSE)
+    @_doc
+    def post(self, method):
+        return success(svc.enrol_by_biometric(method, body()))
+
+
+@ns.route("/demo-auth")
+class DemoAuth(TenantResource):
+    @ns.doc(description="Create an ABHA with demographic Aadhaar auth. Body: `aadhaarNumber`, `mobile`, `name`, "
+                        "`dateOfBirth`, `gender`, `stateCode`, `districtCode`, `address`, `pincode`, optional "
+                        "`profilePhoto` (plain base64).")
+    @ns.response(200, "ABHA created", s.GENERIC_RESPONSE)
+    @_doc
+    def post(self):
+        return success(svc.enrol_by_demographics(body()))
+
+
+@ns.route("/child")
+class ChildAbha(TenantResource):
+    @ns.doc(description="Create a child ABHA under the parent's ABHA user token. Body: `name`, `gender`, "
+                        "`dayOfBirth`, `monthOfBirth`, `yearOfBirth`, optional `profilePhoto`, `password`.")
+    @ns.response(200, "Child ABHA", s.GENERIC_RESPONSE)
+    @_doc
+    def post(self):
+        return from_abdm(svc.create_child_abha(body()))
+
+    @ns.doc(description="List the child ABHAs of the parent's ABHA user token.",
+            params={"xToken": {"in": "query", "description": "parent's ABHA user token (or X-Token header)"}})
+    @ns.response(200, "Children", s.GENERIC_RESPONSE)
+    @_doc
+    def get(self):
+        return from_abdm(svc.list_children({}))

@@ -50,6 +50,48 @@ Not changed:
 | 24 | `GetAbhaPhrCard?xToken=` | `phr_card` | `GET api/v1/abha/phr/card?xToken=` |
 | 25 | `GetQRCodeAbha?xToken=` | `qr_code` | `GET api/v1/abha/profile/qr?xToken=` |
 
+## Mobile-app service (`MobileAbdmService`)
+
+The older `MobileAbdmService` (patient-side flows) used `ABDM/*` paths and reads ABDM's answer **at the top level**
+(`accounts`, `token`, `ABHAProfile`, ...), not inside `data`. Those calls go to `/api/v1/abha/app/*`, which use the same
+ABDM logic as the normal endpoints but answer the way that service reads. Auth is the `Client-Id` + `Client-Secret`
+headers it already sends.
+
+| Old path | `config('abdm.endpoints.*')` | Gateway path | Notes |
+|---|---|---|---|
+| `ABDM/get-otp` | `app_aadhaar_otp` | `POST api/v1/abha/app/aadhaar/otp` | |
+| `ABDM/verify-otp` | `app_aadhaar_verify` | `POST api/v1/abha/app/aadhaar/verify` | `ABHAProfile`, `tokens`, `isNew` |
+| `ABDM/verify/verifyByMobile` | `app_mobile_otp` | `POST api/v1/abha/app/mobile/otp` | one step (search + OTP, first ABHA), HTTP **201** |
+| `ABDM/verify/verifyOTPMobile` | `app_mobile_verify` | `POST api/v1/abha/app/mobile/verify` | HTTP **201**; wrong OTP is HTTP 200 + `authResult: failed` |
+| `ABDM/verify-email` | `app_email_verify_link` | `POST api/v1/abha/app/email/verify-link` | ABHA token in `x-token` |
+| `ABDM/get-enrollment` | `app_address_suggestions` | `POST api/v1/abha/app/address-suggestions` | |
+| `ABDM/update-address` | `app_address` | `POST api/v1/abha/app/address` | |
+| `ABDM/verify/sendOTPVerifyABHA` | `app_abha_number_otp` | `POST api/v1/abha/app/abha-number/otp` | |
+| `ABDM/verify/verifyOTPABHA` | `app_abha_number_verify` | `POST api/v1/abha/app/abha-number/verify` | |
+| `ABDM/download-abha` | `app_card` | `GET api/v1/abha/app/profile/card` | bytes |
+| `ABDM/QRCodeABHA` | `app_qr` | `GET api/v1/abha/app/profile/qr` | bytes |
+| `ABDM/update-mobile`, `ABDM/verify-mobile` | `update_mobile`, `verify_mobile` | the normal `api/v1/abha/mobile/*` | same as `ABDMService` |
+
+`getEnrollmentList` and `updateAbhaAddress` sent no headers before; they now send `getHeaders()` (the gateway
+authenticates every call). Tests: `tests/contract/test_m1_app_compat.py`.
+
+## Other M1 routes in the gateway (not called by i-medicus today)
+
+Built from the ABDM Milestone-1 Postman collection; each has a contract test in
+`tests/contract/test_m1_account_pending.py` that pins the collection's path, scope and body.
+
+| Group | Gateway paths |
+|---|---|
+| Delete / deactivate / re-KYC | `POST api/v1/abha/account/{delete,deactivate,re-kyc}/{otp,verify}` (`method`: aadhaar / abha / password; `reasons` required for delete and deactivate) |
+| Reactivate | `POST api/v1/abha/account/reactivate/{otp,verify}` |
+| Password | `POST api/v1/abha/account/password`, `.../password/otp`, `.../password/verify`; login `POST .../account/login/password/{search,verify}` |
+| Profile update, logout, refresh | `PATCH api/v1/abha/account/profile`, `GET .../account/logout`, `GET .../account/refresh-token` (`R-Token` header) |
+| Driving licence enrolment | `POST api/v1/abha/enrol/dl/{otp,verify,create}` |
+| Biometric / demographic / child enrolment | `POST api/v1/abha/enrol/biometric/{fingerprint,face,iris}`, `.../enrol/demo-auth`, `.../enrol/child` (GET lists children) |
+| Forgot ABHA / retrieval | `POST api/v1/abha/login/forgot/{mobile,aadhaar}/{otp,verify}`, `.../login/retrieval/{otp,verify}` |
+| Biometric login | `POST api/v1/abha/login/{abha-number,mobile,abha-address}/biometric/{fingerprint,face,iris}/{otp,verify}` |
+| Benefit | `POST api/v1/abha/benefit/{search,link}`, `GET api/v1/abha/benefit/abha/<number>` |
+
 ## Environment (`i-medicus_web/src/.env`)
 ```
 ABDM_BASE_URL=https://abdm-gateway.example.com/   # gateway URL (local dev: http://localhost:5000/)

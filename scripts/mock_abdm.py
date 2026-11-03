@@ -140,6 +140,23 @@ def on_share_calls():
     return jsonify(ON_SHARE_CALLS)
 
 
+M2_CALLS = []
+
+
+@app.post("/api/hiecm/<path:subpath>")
+def m2_any(subpath):
+    """M2 (HIP) calls: linking, consent and health-information answers. Recorded, answered 202 like ABDM.
+    Registered after the specific routes above, which win (sessions, on-share)."""
+    M2_CALLS.append({"path": "/api/hiecm/" + subpath, "hipId": request.headers.get("X-HIP-ID"),
+                     "linkToken": request.headers.get("X-LINK-TOKEN"), "body": request.get_json(force=True, silent=True)})
+    return "", 202
+
+
+@app.get("/mock/m2-calls")
+def m2_calls():
+    return jsonify(M2_CALLS)
+
+
 @app.patch("/api/hiecm/gateway/v3/bridge/url")
 def bridge_url():
     return jsonify({"message": "bridge url updated (mock)", "url": request.get_json(force=True).get("url")})

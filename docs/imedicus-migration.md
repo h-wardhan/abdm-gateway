@@ -92,6 +92,31 @@ Built from the ABDM Milestone-1 Postman collection; each has a contract test in
 | Biometric login | `POST api/v1/abha/login/{abha-number,mobile,abha-address}/biometric/{fingerprint,face,iris}/{otp,verify}` |
 | Benefit | `POST api/v1/abha/benefit/{search,link}`, `GET api/v1/abha/benefit/abha/<number>` |
 
+## M2 (HIP) linking, consent and health-information acknowledgement (Days 9-11)
+
+i-medicus keeps its handlers and bodies; only the path (and the base URL of the callback-answer client) changes.
+Answers go to `/api/v1/hip/*`, authenticated with `Client-Id` + `Client-Secret`. Contract tests:
+`tests/contract/test_m2_hip.py`, `test_m2_end_to_end.py`.
+
+| Old VCDoctor path | `config('abdm.endpoints.*')` | Gateway path | Answer |
+|---|---|---|---|
+| `ABDMVC/OnDiscoverCareContext/...` | `hip_on_discover` | `POST api/v1/hip/care-context/on-discover` | 200 |
+| `ABDMVC/OnInitLinkCareContext/...` | `hip_on_init` | `POST api/v1/hip/link/on-init` | 200 |
+| `ABDMVC/OnConfirmLinkCareContext/...` | `hip_on_confirm` | `POST api/v1/hip/link/on-confirm` | 200 `success:true` |
+| `ABDMVC/HIPGenerateToken/hip-link-token` | `hip_link_token` | `POST api/v1/hip/link-token` | 202 |
+| `ABDMVC/LinkCareContext/hip-initiated-linking-single` | `hip_link_care_context` | `POST api/v1/hip/link/care-context` (header `x-link-token`) | 202 |
+| `ABDMVC/NotifyCareContext/hip-initiated-linking-notify` | `hip_link_notify` | `POST api/v1/hip/link/notify` | 201 |
+| `ABDMVC/SendSMSNotification/deep-linking-notify` | `hip_sms_notify` | `POST api/v1/hip/sms/notify` | 200 |
+| `ABDMVC/NotifyConsentRequest/consent-hip-on-notify` (also `smsNotify`) | `hip_consent_on_notify` | `POST api/v1/hip/consent/on-notify` | 201 |
+| `ABDM/hip-healthinformation-status-acknowledged` | `hip_hi_on_request` | `POST api/v1/hip/health-information/on-request` | 200, or 403 `CONSENT_INVALID` |
+
+Gateway behaviour: an answer is matched to ABDM's callback by `response.requestId` (only the client's own facilities,
+else 404 `CALLBACK_NOT_FOUND`); sent once (a repeat returns `status: already_sent`); queued and retried when ABDM is
+down. The gateway stores every consent notification (`hip_consents`) and refuses to acknowledge a health-information
+request whose consent is unknown, revoked, expired, or whose date range is outside the consent.
+In i-medicus the six callback handlers are dispatched from `ABHAController::webhook`; `CreateSession` now uses the
+gateway session.
+
 ## Environment (`i-medicus_web/src/.env`)
 ```
 ABDM_BASE_URL=https://abdm-gateway.example.com/   # gateway URL (local dev: http://localhost:5000/)

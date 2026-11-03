@@ -27,6 +27,7 @@ from src.app.extensions import db, limiter
 from src.app.models import CallbackEvent
 from src.app.models import callback_event as ce
 from src.app.models import outbox_job as oj
+from src.app.services import hip_consent_service
 from src.app.outbox import engine
 
 logger = logging.getLogger("abdm_gateway.callbacks")
@@ -96,6 +97,8 @@ def receive(subpath):
         logger.info("Duplicate callback ignored", extra={"callback_path": path, "abdm_request_id": request_id})
         return success({"status": "accepted", "duplicate": True}, 202)
 
+    if registration and path.endswith("consent/request/hip/notify") and isinstance(body, dict):
+        hip_consent_service.record_notification(body, hip_id, registration.api_client_id)
     if registration:
         engine.enqueue(oj.KIND_FORWARD_CALLBACK, callback_event_id=event.id, api_client_id=registration.api_client_id)
     db.session.commit()

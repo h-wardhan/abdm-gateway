@@ -16,6 +16,7 @@ DEAD = "dead"
 
 KIND_FORWARD_CALLBACK = "forward_callback"
 KIND_ABDM_CALL = "abdm_call"
+KIND_HIU_PUSH = "hiu_push"
 
 
 class OutboxJob(TimestampMixin, db.Model):

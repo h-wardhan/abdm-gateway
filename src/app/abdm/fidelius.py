@@ -152,6 +152,11 @@ def encode_x509(point):
     return _X509_PREFIX + encode_point(point)
 
 
+def encode_x509_b64(point):
+    """Base64 X.509 form of a curve point: what ABDM puts in `dhPublicKey.keyValue`."""
+    return _b64encode(encode_x509(point))
+
+
 def parse_public_key(value):
     """Base64 public key (raw point or X.509) -> a validated curve point. Raises FideliusError."""
     data = _b64decode(value, "public key")

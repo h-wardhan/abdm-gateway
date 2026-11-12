@@ -4,8 +4,10 @@ from src.app.api.v1.app_compat import ns as app_compat_ns
 from src.app.api.v1.benefit import ns as benefit_ns
 from src.app.api.v1.auth import ns as auth_ns
 from src.app.api.v1.enrol import ns as enrol_ns
+from src.app.api.v1.fhir import ns as fhir_ns
 from src.app.api.v1.hip import ns as hip_ns
 from src.app.api.v1.hips import ns as hips_ns
+from src.app.api.v1.hiu import ns as hiu_ns
 from src.app.api.v1.login import ns as login_ns
 from src.app.api.v1.profile import ns as profile_ns
 from src.app.api.v1.search import ns as search_ns
@@ -23,7 +25,9 @@ NAMESPACES = [
     (benefit_ns, "/api/v1/abha/benefit"),
     (app_compat_ns, "/api/v1/abha/app"),
     (hip_ns, "/api/v1/hip"),
+    (hiu_ns, "/api/v1/hiu"),
     (hips_ns, "/api/v1/hips"),
+    (fhir_ns, "/api/v1/fhir"),
     (share_ns, "/api/v1/share"),
 ]
 

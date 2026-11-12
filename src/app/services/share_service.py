@@ -65,7 +65,7 @@ def facility_qr(client, hip_id, counter_id=None):
 
     It carries the facility id (and optionally a counter), so the scan callback names the clinic.
     Only a facility registered to `client` is accepted. Returns (payload dict, PNG as a data URI)."""
-    reg = registry.get_for_client(client, registry.validate_hip_id(hip_id))
+    reg = registry.for_call(client, registry.validate_hip_id(hip_id))
     payload = {"hipId": reg.hip_id}
     if reg.name:
         payload["hipName"] = reg.name

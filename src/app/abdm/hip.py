@@ -16,6 +16,7 @@ ON_INIT = "/api/hiecm/user-initiated-linking/v3/link/care-context/on-init"
 ON_CONFIRM = "/api/hiecm/user-initiated-linking/v3/link/care-context/on-confirm"
 CONSENT_ON_NOTIFY = "/api/hiecm/consent/v3/request/hip/on-notify"
 HI_ON_REQUEST = "/api/hiecm/data-flow/v3/health-information/hip/on-request"
+HI_NOTIFY = "/api/hiecm/data-flow/v3/health-information/notify"
 
 GENERATE_TOKEN = "/api/hiecm/v3/token/generate-token"
 LINK_CARE_CONTEXT = "/api/hiecm/hip/v3/link/carecontext"
@@ -23,9 +24,10 @@ LINK_NOTIFY = "/api/hiecm/hip/v3/link/context/notify"
 SMS_NOTIFY = "/api/hiecm/hip/v3/link/patient/links/sms/notify2"
 
 
-def reply(path, body, hip_id, api_client_id, name):
-    """Answer a callback. Returns {"status": "sent" | "queued", ...}."""
-    return send_or_queue(path, body, headers={"X-HIP-ID": hip_id}, endpoint_name=name, api_client_id=api_client_id)
+def reply(path, body, hip_id, api_client_id, name, header="X-HIP-ID"):
+    """Answer a callback. Returns {"status": "sent" | "queued", ...}. `header` names the facility header:
+    X-HIP-ID, or X-HIU-ID for a facility acting as HIU."""
+    return send_or_queue(path, body, headers={header: hip_id}, endpoint_name=name, api_client_id=api_client_id)
 
 
 def generate_token(hip_id, body):

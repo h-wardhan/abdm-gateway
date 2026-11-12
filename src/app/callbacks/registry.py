@@ -125,6 +125,19 @@ def get_for_client(client, hip_id):
     return reg
 
 
+def for_call(client, hip_id):
+    """The facility of a call `client` starts (link token, consent request, ...). A clinic the client has a default
+    webhook for needs no registration step: the first call registers it, as the first callback would (the clinic
+    registered itself in i-medicus; the gateway only learns its id). A facility that belongs to another client is
+    never taken over: it stays HIP_NOT_FOUND."""
+    reg = get(hip_id)
+    if reg is None and client.callback_url and client.webhook_secret_enc:
+        reg = _auto_register(client, hip_id)
+    if reg is None or reg.api_client_id != client.id:
+        raise NotFoundError("HIP not found", code="HIP_NOT_FOUND")
+    return reg
+
+
 def disable(reg):
     reg.is_active = False
     db.session.commit()
@@ -194,6 +207,10 @@ def register_from_default_webhook(hip_id):
         hip_id = validate_hip_id(hip_id)
     except ValidationError:
         return None
+    return _auto_register(client, hip_id)
+
+
+def _auto_register(client, hip_id):
     reg = HipRegistration(api_client_id=client.id, hip_id=hip_id, callback_url=client.callback_url,
                           webhook_secret_enc=client.webhook_secret_enc, auto_registered=True)
     db.session.add(reg)

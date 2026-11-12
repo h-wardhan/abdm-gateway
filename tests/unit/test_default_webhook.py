@@ -252,3 +252,27 @@ def test_cli_hips_list_marks_auto_registered(run, tenant, webhook):
 
 def test_unsafe_url_is_a_validation_error():
     assert issubclass(registry.UnsafeUrlError, ValidationError)
+
+
+# ---- a call the client starts (link token, consent request): the clinic needs no registration step -----------------
+
+def test_a_call_registers_an_unknown_clinic_for_the_client_with_a_default_webhook(app, tenant, webhook):
+    reg = registry.for_call(tenant, "IN0810041408")
+    assert reg.api_client_id == tenant.id and reg.auto_registered and reg.callback_url == CALLBACK_URL
+    assert registry.for_call(tenant, "IN0810041408").id == reg.id  # the second call finds it
+    assert HipRegistration.query.filter_by(hip_id="IN0810041408").count() == 1
+
+
+def test_a_call_does_not_take_over_a_clinic_of_another_client(app, tenant, webhook):
+    other = _other_client()
+    registry.upsert(other, "IN0810041412", CALLBACK_URL)
+    with pytest.raises(registry.NotFoundError) as e:
+        registry.for_call(tenant, "IN0810041412")
+    assert e.value.code == "HIP_NOT_FOUND"
+    assert HipRegistration.query.filter_by(hip_id="IN0810041412").one().api_client_id == other.id
+
+
+def test_a_call_for_an_unknown_clinic_without_a_default_webhook_is_still_not_found(app, tenant):
+    with pytest.raises(registry.NotFoundError):
+        registry.for_call(tenant, "IN0810041408")
+    assert HipRegistration.query.filter_by(hip_id="IN0810041408").count() == 0

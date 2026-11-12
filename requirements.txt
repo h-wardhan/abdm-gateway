@@ -19,3 +19,4 @@ gunicorn==23.0.0
 pytest==8.4.2
 pytest-cov==7.0.0
 responses==0.25.8
+fhir.resources==8.3.0

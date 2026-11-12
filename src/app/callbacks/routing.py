@@ -3,8 +3,9 @@ Work out where a callback from ABDM belongs.
 
 - `normalize_path()` turns the URL ABDM called into the path forwarded to the client app
   ("api/v3/hip/patient/share"), refusing anything odd.
-- `resolve_hip_id()` finds the facility the callback is about: the X-HIP-ID header first, then the
-  places ABDM puts it in the body (patient share, consent notify, ...).
+- `resolve_hip_id()` finds the facility the callback is about: the X-HIP-ID (or, for a facility acting as HIU,
+  X-HIU-ID) header first, then the places ABDM puts it in the body (patient share, consent notify, ...).
+  The facility id is the same whichever role it plays.
 """
 import re
 
@@ -20,6 +21,11 @@ HIP_BODY_PATHS = (
     ("hipId",),
     ("notification", "consentDetail", "hip", "id"),
     ("consentDetail", "hip", "id"),
+    # callbacks of a facility acting as HIU (consent notifications, HIU health-information)
+    ("notification", "consentDetail", "hiu", "id"),
+    ("consentDetail", "hiu", "id"),
+    ("hiu", "id"),
+    ("hiuId",),
 )
 
 
@@ -41,7 +47,7 @@ def _dig(data, keys):
 
 
 def resolve_hip_id(headers, body):
-    header = (headers.get("X-HIP-ID") or "").strip()
+    header = (headers.get("X-HIP-ID") or headers.get("X-HIU-ID") or "").strip()
     if header:
         return header[:64]
     for keys in HIP_BODY_PATHS:

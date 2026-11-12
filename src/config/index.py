@@ -141,6 +141,12 @@ class Config:
     CALLBACK_BLOCKED_HOSTS = _env_list("CALLBACK_BLOCKED_HOSTS", "app.i-medicus.in")
     CALLBACK_RETENTION_DAYS = _env_int("CALLBACK_RETENTION_DAYS", 30)
 
+    # Pushing encrypted health records to a HIU's data-push URL (given by ABDM in the health-information request)
+    PUSH_ALLOW_HTTP = _env_bool("PUSH_ALLOW_HTTP", False)                  # staging HIUs without TLS
+    PUSH_ALLOW_PRIVATE_URLS = _env_bool("PUSH_ALLOW_PRIVATE_URLS", False)  # local development only
+    PUSH_TIMEOUT_CONNECT = _env_int("PUSH_TIMEOUT_CONNECT", 5)
+    PUSH_TIMEOUT_READ = _env_int("PUSH_TIMEOUT_READ", 60)
+
     # --- Outbox / retry worker ---
     OUTBOX_POLL_SECONDS = _env_int("OUTBOX_POLL_SECONDS", 1)
     OUTBOX_BATCH = _env_int("OUTBOX_BATCH", 20)
@@ -161,7 +167,12 @@ class Config:
     RATELIMIT_STORAGE_URI = REDIS_URL or "memory://"
     RATELIMIT_HEADERS_ENABLED = True
 
-    MAX_CONTENT_LENGTH = 1 * 1024 * 1024  # M1 payloads are tiny
+    MAX_CONTENT_LENGTH = 1 * 1024 * 1024  # M1/M2 payloads are tiny ...
+    # ... except FHIR records, which carry their PDFs as base64 (see middleware/body_limits.py)
+    FHIR_MAX_CONTENT_LENGTH = _env_int("FHIR_MAX_CONTENT_LENGTH", 32 * 1024 * 1024)
+    # Runtime structural check of every Bundle (fhir.resources / pydantic). Off only for a dev machine whose OS blocks
+    # pydantic's compiled DLL (Windows Smart App Control); ProductionConfig always keeps it on.
+    FHIR_STRUCTURAL_CHECK = _env_bool("FHIR_STRUCTURAL_CHECK", True)
 
 
 class DevelopmentConfig(Config):
@@ -170,6 +181,7 @@ class DevelopmentConfig(Config):
 
 class ProductionConfig(Config):
     DEBUG = False
+    FHIR_STRUCTURAL_CHECK = True  # not switchable by the environment
 
 
 class TestingConfig(Config):
@@ -181,6 +193,8 @@ class TestingConfig(Config):
     CALLBACK_ALLOW_HTTP = False
     CALLBACK_ALLOW_PRIVATE_URLS = False
     CALLBACK_BLOCKED_HOSTS = ["app.i-medicus.in"]
+    PUSH_ALLOW_HTTP = False
+    PUSH_ALLOW_PRIVATE_URLS = False
     OUTBOX_BACKOFF_SECONDS = [2, 10, 60, 300, 900, 3600]
     OUTBOX_MAX_ATTEMPTS = 6
     REDIS_URL = None

@@ -120,6 +120,7 @@ def fire_callback():
                "TIMESTAMP": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()), "Content-Type": "application/json"}
     if data.get("sendToken", True):
         headers["Authorization"] = f"Bearer {token}"
+    headers.update(data.get("headers") or {})   # e.g. X-HIP-ID / X-HIU-ID: which facility the callback is for
     url = data.get("gatewayUrl", "http://127.0.0.1:5000").rstrip("/") + data["path"]
     reply = requests.post(url, json=data.get("body", {}), headers=headers, timeout=10)
     return jsonify({"gatewayStatus": reply.status_code, "gatewayBody": reply.json() if reply.content else None})
@@ -145,9 +146,11 @@ M2_CALLS = []
 
 @app.post("/api/hiecm/<path:subpath>")
 def m2_any(subpath):
-    """M2 (HIP) calls: linking, consent and health-information answers. Recorded, answered 202 like ABDM.
+    """M2 / M3 calls (HIP and HIU): linking, consent, health-information, data-flow notification. Recorded, answered
+    202 like ABDM.
     Registered after the specific routes above, which win (sessions, on-share)."""
     M2_CALLS.append({"path": "/api/hiecm/" + subpath, "hipId": request.headers.get("X-HIP-ID"),
+                     "hiuId": request.headers.get("X-HIU-ID"), "requestId": request.headers.get("REQUEST-ID"),
                      "linkToken": request.headers.get("X-LINK-TOKEN"), "body": request.get_json(force=True, silent=True)})
     return "", 202
 

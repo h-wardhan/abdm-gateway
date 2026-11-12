@@ -9,6 +9,7 @@ from src.app.cli import register_cli
 from src.app.errors import register_error_handlers
 from src.app.extensions import api, cache, db, limiter, migrate
 from src.app.middleware.audit import init_audit
+from src.app.middleware.body_limits import init_body_limits
 from src.app.middleware.request_context import init_request_context
 from src.config.index import BASE_DIR, get_config
 from src.config.logger import setup_logging
@@ -50,6 +51,7 @@ def create_app(config_name=None):
 
     # after_request hooks run in reverse order: request_context (sets latency) runs before audit
     init_audit(app)
+    init_body_limits(app)
     init_request_context(app)
 
     if app.config["SWAGGER_ENABLED"]:

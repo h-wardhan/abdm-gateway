@@ -21,7 +21,7 @@ from src.app.errors import NotFoundError, ValidationError
 from src.app.extensions import db
 from src.app.models import CallbackEvent, HipReply
 from src.app.models import hip_state
-from src.app.services import hip_consent_service
+from src.app.services import hip_consent_service, hip_transfer_service
 
 
 # ---- helpers ------------------------------------------------------------------------------------------------
@@ -40,12 +40,13 @@ def _callback(client, request_id):
     return event
 
 
-def _answer(client, event, kind, path, body, name):
-    """Send an answer once. A second answer to the same callback is a duplicate and is not sent."""
+def _answer(client, event, kind, path, body, name, header="X-HIP-ID"):
+    """Send an answer once. A second answer to the same callback is a duplicate and is not sent.
+    `header` is the facility header (X-HIU-ID for a facility answering as HIU)."""
     request_id = event.request_id
     if HipReply.query.filter_by(request_id=request_id, kind=kind).first():
         return {"status": "already_sent", "hipId": event.hip_id}
-    result = abdm.reply(path, body, event.hip_id, client.id, name)
+    result = abdm.reply(path, body, event.hip_id, client.id, name, header)
     db.session.add(HipReply(api_client_id=client.id, request_id=request_id, kind=kind,
                             status=hip_state.REPLY_QUEUED if result["status"] == "queued" else hip_state.REPLY_SENT))
     db.session.commit()
@@ -83,7 +84,7 @@ def _patients(data):
 def _hip_id(client, data):
     """Facility of a call we start: `hipid` / `hipId` in the body or the X-HIP-ID header; must be the client's own."""
     hip_id = v.pick(data, "hipid", "hipId", "hip_id") or request.headers.get("X-HIP-ID")
-    return registry.get_for_client(client, registry.validate_hip_id(hip_id)).hip_id
+    return registry.for_call(client, registry.validate_hip_id(hip_id)).hip_id
 
 
 def _link_token(data):
@@ -191,7 +192,7 @@ def sms_notify(client, data):
 
     The clinic name is the one registered for the facility: the `name` i-medicus sends is the patient's."""
     hip_id = _hip_id(client, data)
-    reg = registry.get_for_client(client, hip_id)
+    reg = registry.for_call(client, hip_id)
     body = {
         "requestId": str(uuid.uuid4()),
         "timestamp": _now(),
@@ -227,6 +228,7 @@ def hi_on_request(client, data):
     transaction_id = str(v.require(transaction_id, "transactionId"))
     consent_id = (hi_request.get("consent") or {}).get("id")
     hip_consent_service.assert_usable(consent_id, hi_request, client.id)
+    hip_transfer_service.register_request(event, original, hi_request, transaction_id)
     body = {"hiRequest": {"transactionId": transaction_id, "sessionStatus": "ACKNOWLEDGED"},
             "response": {"requestId": request_id}}
     return _answer(client, event, "hi_on_request", abdm.HI_ON_REQUEST, body, "hip/health-information/on-request")

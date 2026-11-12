@@ -65,5 +65,17 @@ def mask_payload(data):
     return data
 
 
+def shorten_payload(data, limit=1000):
+    """Deep copy of data with long strings cut to `limit` characters. Run before mask_payload so that a request that
+    carries a document (base64 PDFs in the FHIR payloads) is not stored whole in the audit table."""
+    if isinstance(data, dict):
+        return {k: shorten_payload(v, limit) for k, v in data.items()}
+    if isinstance(data, list):
+        return [shorten_payload(v, limit) for v in data]
+    if isinstance(data, str) and len(data) > limit:
+        return f"{data[:limit]}...[{len(data) - limit} more characters]"
+    return data
+
+
 def mask_headers(headers):
     return {k: ("***" if _norm(k) in _SECRET_KEYS else v) for k, v in dict(headers).items()}

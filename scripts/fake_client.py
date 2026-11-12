@@ -4,6 +4,8 @@ A stand-in for a client app's webhook (what i-medicus' /api/abdm-webhook does), 
     python scripts/fake_client.py                      # http://127.0.0.1:5055/api/abdm-webhook/...
     WEBHOOK_SECRET=<secret from `flask hips add`>      verify X-Gateway-Signature and say so
     FAKE_CLIENT_FAIL_FIRST=2                           answer 503 to the first 2 deliveries (retry drill)
+    FAKE_HIU_FAIL_FIRST=1                              answer 503 to the first data push(es) (HIU down drill)
+    POST /api/abdm-webhook is the push URL of a HIU; GET /pushed lists what was pushed
 
 Register it with the gateway (local only, it is a private address):
     CALLBACK_ALLOW_PRIVATE_URLS=true CALLBACK_ALLOW_HTTP=true
@@ -35,6 +37,27 @@ def webhook(key):
     if seen["count"] <= int(os.environ.get("FAKE_CLIENT_FAIL_FIRST", 0)):
         return jsonify({"status": "error"}), 503
     return jsonify({"status": "success"})
+
+
+pushed = []
+
+
+@app.post("/api/abdm-webhook")
+def data_push():
+    """A HIP pushing encrypted health records (this app playing a HIU: its DATA_PUSH_URL is this URL)."""
+    body = request.get_json(force=True, silent=True) or {}
+    seen["pushes"] = seen.get("pushes", 0) + 1
+    print(f"[push {seen['pushes']}] transactionId={body.get('transactionId')} entries={len(body.get('entries') or [])}",
+          flush=True)
+    if seen["pushes"] <= int(os.environ.get("FAKE_HIU_FAIL_FIRST", 0)):
+        return jsonify({"status": "error"}), 503
+    pushed.append(body)
+    return jsonify({"status": "success"})
+
+
+@app.get("/pushed")
+def pushed_records():
+    return jsonify(pushed)
 
 
 if __name__ == "__main__":

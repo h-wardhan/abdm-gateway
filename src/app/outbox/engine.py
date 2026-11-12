@@ -174,4 +174,4 @@ def process_due(limit=None):
     return len(jobs)
 
 
-from src.app.outbox import abdm_calls, handlers  # noqa: E402,F401  (registers the job handlers)
+from src.app.outbox import abdm_calls, handlers, hiu_push  # noqa: E402,F401  (registers the job handlers)

@@ -10,7 +10,7 @@ from flask import g, request
 from src.app.extensions import db
 from src.app.middleware.tenant_auth import client_ip
 from src.app.models import ApiAuditLog
-from src.utils.masking import mask_payload
+from src.utils.masking import mask_payload, shorten_payload
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def init_audit(app):
                 abdm_status=getattr(g, "abdm_status", None),
                 latency_ms=getattr(g, "latency_ms", None),
                 ip=client_ip(),
-                request_body=mask_payload(request.get_json(silent=True)) if request.is_json else None,
+                request_body=mask_payload(shorten_payload(request.get_json(silent=True))) if request.is_json else None,
             ))
             db.session.commit()
         except Exception:  # noqa: BLE001

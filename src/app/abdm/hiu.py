@@ -23,9 +23,9 @@ def consent_init(hiu_id, request_id, body):
                         headers={"X-HIU-ID": hiu_id, "REQUEST-ID": request_id}, endpoint_name="hiu/consent/init")
 
 
-def consent_status(hiu_id, body):
-    return abdm_request("POST", CONSENT_STATUS, target="gateway", json=body, headers={"X-HIU-ID": hiu_id},
-                        endpoint_name="hiu/consent/status")
+def consent_status(hiu_id, body, api_client_id):
+    return send_or_queue(CONSENT_STATUS, body, headers={"X-HIU-ID": hiu_id}, endpoint_name="hiu/consent/status",
+                         api_client_id=api_client_id)
 
 
 def consent_on_notify(hiu_id, body, api_client_id):

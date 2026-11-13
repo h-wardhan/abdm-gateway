@@ -22,7 +22,8 @@ from src.app.abdm import hiu as abdm
 from src.app.callbacks import registry
 from src.app.common import validators as v
 from src.app.errors import ValidationError
-from src.app.services import hip_consent_service, hip_service
+from src.app.models import HiuTransfer
+from src.app.services import hip_consent_service, hip_service, hiu_consent_service
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]{7,63}$")
 _PURPOSES = {"CAREMGT": "Care Management", "BTG": "Break the Glass", "PUBHLTH": "Public Health",
@@ -135,6 +136,18 @@ def consent_fetch(client, data):
     return out
 
 
+def consent_status(client, data):
+    """Ask ABDM where a consent request stands (answer arrives as `hiu/consent/request/on-status`). Body:
+    `{consentRequestId, hipId}`: the id is the one ABDM's `on-init` callback returned for our request."""
+    hiu_id = _facility(client, data)
+    request_id = str(v.require(v.pick(data, "consentRequestId", "consentRequestID"), "consentRequestId"))
+    result = abdm.consent_status(hiu_id, {"consentRequestId": request_id}, client.id)
+    out = {"hipId": hiu_id, "status": result["status"]}
+    if result["status"] == "queued":
+        out["jobId"] = result["jobId"]
+    return out
+
+
 # ---- health-information request -------------------------------------------------------------------------------------
 
 def _push_url(value):
@@ -160,9 +173,14 @@ def health_information_request(client, data):
     except fidelius.FideliusError as exc:
         raise ValidationError(f"Invalid key material: {exc}", code="INVALID_KEY_MATERIAL")
     start, end = _time(v.pick(data, "fromDate"), "fromDate"), _time(v.pick(data, "toDate"), "toDate")
-    body = {"hiRequest": {"consent": {"id": str(v.require(v.pick(data, "consentId"), "consentId"))},
+    consent_id = str(v.require(v.pick(data, "consentId"), "consentId"))
+    body = {"hiRequest": {"consent": {"id": consent_id},
                           "dateRange": {"from": start, "to": end},
                           "dataPushUrl": _push_url(v.pick(data, "dataPushUrl")),
                           "keyMaterial": key_material}}
+    # a denied, revoked, expired or out-of-range consent is stopped here, not sent to ABDM
+    hiu_consent_service.assert_usable(client.id, consent_id, start, end)
     abdm.health_information_request(hiu_id, request_id, body)
+    if HiuTransfer.query.filter_by(request_id=request_id).first() is None:
+        hiu_consent_service.note_request(client.id, hiu_id, request_id, consent_id)
     return {"hipId": hiu_id, "requestId": request_id, "status": "requested"}

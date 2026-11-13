@@ -6,6 +6,7 @@ from src.app.api.v1 import schemas as s
 from src.app.common.response import current_request_id
 from src.app.common.validators import body
 from src.app.middleware.tenant_auth import CredentialsResource
+from src.app.services import hiu_consent_service as consent_service
 from src.app.services import hiu_service as svc
 
 ns = Namespace("HIU (M3)", path="/api/v1/hiu", description=(
@@ -53,12 +54,35 @@ class ConsentFetch(CredentialsResource):
         return _envelope(svc.consent_fetch(g.client, body()))
 
 
+@ns.route("/consent/status")
+class ConsentStatus(CredentialsResource):
+    @ns.doc(description="Ask ABDM where a consent request stands (answer arrives as the "
+                        "`hiu/consent/request/on-status` callback). Body: `consentRequestId` (the id ABDM's `on-init` "
+                        "callback returned), `hipId`. Queued and retried if ABDM is down.")
+    @ns.response(200, "Sent / queued", s.GENERIC_RESPONSE)
+    @examples.body(ns, "HiuConsentStatus")
+    def post(self):
+        return _envelope(svc.consent_status(g.client, body()))
+
+
+@ns.route("/consent/<string:consent_id>")
+class ConsentState(CredentialsResource):
+    @ns.doc(description="A consent as the gateway knows it from ABDM's callbacks: `status`, whether it is `usable` "
+                        "now (and the `reason` if not: DENIED, REVOKED, EXPIRED), granted date range, erase date and "
+                        "the health-information requests made under it (`transactionId`, status). Only the client's "
+                        "own consents: another client's is 404 `CONSENT_NOT_FOUND`.")
+    @ns.response(200, "The consent", s.GENERIC_RESPONSE)
+    def get(self, consent_id):
+        return _envelope(consent_service.describe(g.client.id, consent_id))
+
+
 @ns.route("/health-information/request")
 class HealthInformationRequest(CredentialsResource):
     @ns.doc(description="Ask ABDM to have the HIPs of a consent send the records, encrypted for our key. Body: "
                         "`consentId`, `fromDate`, `toDate`, `expiryDate` (of our key), `dataPushUrl` (where the HIP "
                         "pushes), `publicKey`, `nonce` (from `GET /api/v1/fhir/keys`), `hipId`, `requestId`. Sent once, "
-                        "never queued (a repeat would open a second transaction).")
+                        "never queued (a repeat would open a second transaction). A consent the gateway knows to be denied, revoked, "
+                        "expired or not covering the date range is refused: 403 `CONSENT_INVALID`, nothing is sent.")
     @ns.response(202, "Requested; ABDM calls back with the transactionId", s.GENERIC_RESPONSE)
     @examples.body(ns, "HiuHiRequest")
     def post(self):

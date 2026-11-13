@@ -9,6 +9,8 @@ _SECRET_KEYS = {
     "secret", "authorization", "x-token", "xtoken", "t-token", "r-token", "token",
     "accesstoken", "refreshtoken", "refresh_token", "access_token", "logintoken",
     "loginid", "encryptionkey", "profilephoto", "photo", "preferredabhaaddresscard",
+    # Fidelius: private keys, and the record before / after encryption
+    "privatekey", "senderprivatekey", "receiverprivatekey", "plaintextdata", "decrypteddata", "encrypteddata",
 }
 # Keys whose values keep only the last 4 characters
 _PARTIAL_KEYS = {

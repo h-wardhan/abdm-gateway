@@ -31,6 +31,18 @@ def _configure_database(app):
         })
 
 
+def _unsafe_settings(config):
+    """Settings that are fine on a dev machine but weaken a production gateway (logged as warnings at start-up)."""
+    if config.get("DEBUG") or config.get("TESTING") or config["ABDM_ENV"] != "prod":
+        return []
+    found = [name for name in ("CALLBACK_ALLOW_HTTP", "PUSH_ALLOW_HTTP", "SWAGGER_ENABLED") if config.get(name)]
+    if config.get("CALLBACK_AUTH_MODE") != "jwt":
+        found.append("CALLBACK_AUTH_MODE")
+    if config.get("OUTBOX_HTTP_TIMEOUT", 0) < 60:
+        found.append("OUTBOX_HTTP_TIMEOUT<60")
+    return found
+
+
 def create_app(config_name=None):
     app = Flask(__name__)
     app.config.from_object(get_config(config_name))
@@ -67,6 +79,9 @@ def create_app(config_name=None):
     app.register_blueprint(callbacks_blueprint)
     register_error_handlers(app, api)
     register_cli(app)
+
+    for setting in _unsafe_settings(app.config):
+        app.logger.warning("Unsafe setting in production: %s", setting)
 
     app.logger.info(
         "abdm-gateway started",

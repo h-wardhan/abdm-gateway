@@ -49,7 +49,7 @@ class FacilityQr(TenantResource):
         "The QR code of one of your clinics, for the clinic desk: the patient scans it in the ABHA app "
         "(Scan & Share). Same body i-medicus sends to generate it (`hipId`, `callbackUrl`). The answer keeps the "
         "shape its dashboard reads: `type: Success` and `data`, a PNG data URI usable as `<img src>`; `payload` "
-        "is what the QR holds. Only your own registered clinics."))
+        "is what the QR holds: ABDM's URL `<phr host>/share-profile?hip-id=<clinic>&counter-id=<counter>` (`counterId` optional: `SHARE_QR_DEFAULT_COUNTER`, default `1`, is used when none is sent, because the ABHA app refuses a QR without a counter). Only your own registered clinics."))
     @ns.expect(qr_request, validate=False)
     @ns.response(200, "QR created")
     @ns.response(404, "No such clinic for your client")

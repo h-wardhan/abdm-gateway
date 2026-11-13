@@ -69,6 +69,12 @@ EXAMPLES = {
     "HiuConsentOnNotify": {"acknowledgement": [{"status": "OK", "consentId": CONSENT_ID}],
                            "response": {"requestId": REQUEST_ID}, "hipId": HIU_ID},
     "HiuConsentFetch": {"consentId": CONSENT_ID, "hipId": HIU_ID},
+    "FhirLegacyPrescription": {
+        "prescriptionId": "45", "date": "2026-11-12T10:00:00.000Z",
+        "patient": {"id": "9", "name": "Harshwardhan Singh"}, "doctor": {"id": "8", "name": "Brij Doctor"},
+        "medicines": [{"name": "Paracetamol 500mg tablet", "dosage": "10", "frequency": "2", "duration": "5",
+                       "instructions": "after food"}]},
+    "HiuConsentStatus": {"consentRequestId": "2e5f7c1a-8b3d-4c9e-a1f2-6d7e8f9a0b1c", "hipId": HIU_ID},
     "HiuHiRequest": {"consentId": CONSENT_ID, "fromDate": "2026-01-01T00:00:00.000Z", "toDate": "2026-11-06T00:00:00.000Z",
                      "expiryDate": "2026-11-07T00:00:00.000Z", "dataPushUrl": "https://<tunnel-B>/api/abdm-webhook",
                      "publicKey": "<publicKey from GET /fhir/keys>", "nonce": "<nonce from GET /fhir/keys>",

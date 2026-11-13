@@ -124,6 +124,13 @@ class Config:
     ABDM_ABHA_URL = _abdm["ABDM_ABHA_URL"]
     ABDM_X_CM_ID = _abdm["ABDM_X_CM_ID"]
     ABDM_FACILITY_URL = _abdm["ABDM_FACILITY_URL"]  # facility registry: links a facility (HIP) to our bridge
+    # Scan & Share: the clinic QR holds `<SHARE_QR_BASE_URL>?hip-id=<facility>[&counter-id=<counter>]`, the URL the ABHA
+    # app opens. The sandbox host is known; set the production one (from ABDM) in SHARE_QR_BASE_URL.
+    SHARE_QR_BASE_URL = _env("SHARE_QR_BASE_URL", "https://phrsbx.abdm.gov.in/share-profile"
+                             if _abdm["ABDM_ENV"] == "sbx" else None)
+    # The ABHA app refuses a QR without `counter-id` ("Invalid QR code", checked on the sandbox): when the client sends no
+    # counter, this one is used (any letters/digits the facility chooses).
+    SHARE_QR_DEFAULT_COUNTER = _env("SHARE_QR_DEFAULT_COUNTER", "1")
 
     # --- ABDM callbacks (ABDM -> gateway -> client app) ---
     # jwt: reject callbacks without a valid ABDM JWT. observe: verify and log the result but never reject
@@ -140,6 +147,10 @@ class Config:
     # Hosts a client may never register as a callback target (production webhooks), comma separated
     CALLBACK_BLOCKED_HOSTS = _env_list("CALLBACK_BLOCKED_HOSTS", "app.i-medicus.in")
     CALLBACK_RETENTION_DAYS = _env_int("CALLBACK_RETENTION_DAYS", 30)
+
+    # M3: a health-information request for a consent the gateway never heard of (made before it tracked consents) is let
+    # through; set this to refuse those too.
+    HIU_REQUIRE_KNOWN_CONSENT = _env_bool("HIU_REQUIRE_KNOWN_CONSENT", False)
 
     # Pushing encrypted health records to a HIU's data-push URL (given by ABDM in the health-information request)
     PUSH_ALLOW_HTTP = _env_bool("PUSH_ALLOW_HTTP", False)                  # staging HIUs without TLS
@@ -182,6 +193,9 @@ class DevelopmentConfig(Config):
 class ProductionConfig(Config):
     DEBUG = False
     FHIR_STRUCTURAL_CHECK = True  # not switchable by the environment
+    # Local-development escapes (SSRF guards): never switchable by the environment in production
+    CALLBACK_ALLOW_PRIVATE_URLS = False
+    PUSH_ALLOW_PRIVATE_URLS = False
 
 
 class TestingConfig(Config):

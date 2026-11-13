@@ -6,7 +6,7 @@ from flask_restx import Namespace
 from src.app.api.v1 import examples
 from src.app.common.validators import body, pick, require
 from src.app.middleware.tenant_auth import CredentialsResource
-from src.app.services import crypto_service
+from src.app.services import crypto_service, hip_transfer_service, hiu_consent_service
 from src.app.services import fhir_service as svc
 
 ns = Namespace("FHIR (M2)", path="/api/v1/fhir", description=(
@@ -30,6 +30,18 @@ class Prescription(CredentialsResource):
     @examples.body(ns, "FhirRecord")
     def post(self):
         return _bundle("Prescription")
+
+
+@ns.route("/legacy-prescription")
+class LegacyPrescription(CredentialsResource):
+    @ns.doc(description="PrescriptionRecord from the body of i-medicus' video-call flow (VCDoctor's "
+                        "`ConvertPrescription`): `prescriptionId`, `date`, `patient{id, name}`, `doctor{id, name}`, "
+                        "`medicines[{name, dosage, frequency, duration, instructions}]`. That body has no ABHA address "
+                        "or licence number, so the patient's and doctor's id are the identifier values (an optional "
+                        "`healthId` / `licenseNumber` wins); the clinic is the client. Answer: the Bundle.")
+    @examples.body(ns, "FhirLegacyPrescription")
+    def post(self):
+        return svc.convert_legacy_prescription(body(), g.client)
 
 
 @ns.route("/op-consultation")
@@ -118,7 +130,10 @@ class Encrypt(CredentialsResource):
                         "`keyMaterial.dhPublicKey.keyValue` of the push.")
     @examples.body(ns, "FhirEncrypt")
     def post(self):
-        return crypto_service.encrypt(body())
+        data = body()
+        encrypted = crypto_service.encrypt(data)
+        hip_transfer_service.remember_sender_key(g.client, data, encrypted)
+        return encrypted
 
 
 @ns.route("/decrypt")
@@ -126,10 +141,14 @@ class Decrypt(CredentialsResource):
     @ns.doc(description="Decrypt what a HIP pushed to us. Body: `receiverPrivateKey`, `receiverNonce`, `senderPublicKey`, "
                         "`senderNonce` (the pushed `keyMaterial`), `encryptedData`. Answer: a JSON **string** that holds "
                         "`{\"decryptedData\": \"<the plain text>\"}` (as VCDoctor answered: i-medicus decodes it twice and "
-                        "its viewer reads `decryptedData`).")
+                        "its viewer reads `decryptedData`). Optional `transactionId` or `consentId`: when the consent behind it "
+                        "has ended (revoked, denied, expired) the call is 403 `CONSENT_INVALID`.")
     @examples.body(ns, "FhirDecrypt")
     def post(self):
         # VCDoctor answered a JSON string holding Fidelius' {"decryptedData": "<plain text>"}: i-medicus decodes it twice and keeps
         # the object in consent_health_data.fhir_json, and its viewer (AbhaController::show, abdmJson.js) reads `decryptedData`
-        plain = crypto_service.decrypt(body())
+        data = body()
+        # optional `transactionId` / `consentId` (i-medicus does not send them yet): records of an ended consent stay shut
+        hiu_consent_service.assert_may_view(g.client.id, pick(data, "transactionId"), pick(data, "consentId"))
+        plain = crypto_service.decrypt(data)
         return Response(json.dumps(json.dumps({"decryptedData": plain})), mimetype="application/json")

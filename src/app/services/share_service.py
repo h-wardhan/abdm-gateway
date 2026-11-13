@@ -6,13 +6,16 @@ received, matched by ABDM's REQUEST-ID). That is also what keeps clinics apart: 
 its own facilities.
 """
 import json
+import re
+from urllib.parse import urlencode
 
 import segno
+from flask import current_app
 
 from src.app.abdm import scan_share
 from src.app.callbacks import registry, vault
 from src.app.common.validators import abha_address, pick, require
-from src.app.errors import NotFoundError, ValidationError
+from src.app.errors import AppError, NotFoundError, ValidationError
 from src.app.models import CallbackEvent
 
 SHARE_PATH = "api/v3/hip/patient/share"
@@ -60,20 +63,33 @@ def respond(client, data):
     return scan_share.send_on_share(event.hip_id, body, client.id), event.hip_id
 
 
+class QrNotConfigured(AppError):
+    status = 503
+    code = "SHARE_QR_NOT_CONFIGURED"
+    default_message = "The Scan & Share QR address is not configured (SHARE_QR_BASE_URL)"
+
+
+_COUNTER_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+
+
 def facility_qr(client, hip_id, counter_id=None):
     """The QR a clinic puts on the desk; the patient scans it in the ABHA app (Scan & Share).
 
-    It carries the facility id (and optionally a counter), so the scan callback names the clinic.
+    ABDM's format is a URL, not JSON: `https://<phr host>/share-profile?hip-id=<facility>&counter-id=<counter>`
+    (the counter is any alphanumeric text the facility chooses; the ABHA app refuses a QR without it). The scan
+    callback then names the clinic.
     Only a facility registered to `client` is accepted. Returns (payload dict, PNG as a data URI)."""
     reg = registry.for_call(client, registry.validate_hip_id(hip_id))
-    payload = {"hipId": reg.hip_id}
-    if reg.name:
-        payload["hipName"] = reg.name
-    if counter_id:
-        counter_id = str(counter_id).strip()
-        if len(counter_id) > 32:
-            raise ValidationError("counterId must be at most 32 characters", code="INVALID_COUNTER_ID",
-                                  details={"field": "counterId"})
-        payload["counterId"] = counter_id
-    image = segno.make(json.dumps(payload, separators=(",", ":")), error="m").png_data_uri(scale=8, border=4)
+    base = current_app.config.get("SHARE_QR_BASE_URL")
+    if not base:
+        raise QrNotConfigured()
+    # i-medicus sends no counter, but the ABHA app rejects a QR without one: the configured default stands in
+    counter_id = str(counter_id).strip() if counter_id else current_app.config.get("SHARE_QR_DEFAULT_COUNTER")
+    if not counter_id or not _COUNTER_RE.match(str(counter_id)):
+        raise ValidationError("counterId must be 1 to 32 letters, digits, '.', '_' or '-'",
+                              code="INVALID_COUNTER_ID", details={"field": "counterId"})
+    payload = {"hipId": reg.hip_id, "counterId": counter_id}
+    params = [("hip-id", reg.hip_id), ("counter-id", counter_id)]
+    payload["url"] = f"{base}?{urlencode(params)}"
+    image = segno.make(payload["url"], error="m").png_data_uri(scale=8, border=4)
     return payload, image

@@ -157,7 +157,7 @@ def test_the_fhir_limit_is_configurable(app, client, hip_auth):
     assert post(client, hip_auth, "prescription", sample("Prescription")).status_code == 413
 
 
-def test_the_audit_log_keeps_a_short_request_body_not_the_whole_pdf(client, hip_auth):
+def test_the_audit_log_keeps_the_call_but_never_the_health_record(client, hip_auth):
     from src.app.models import ApiAuditLog
     import base64
     from tests.fhir import samples
@@ -165,6 +165,31 @@ def test_the_audit_log_keeps_a_short_request_body_not_the_whole_pdf(client, hip_
     payload["binaryDocument"]["base64Data"] = base64.b64encode(samples.PDF + b"0" * 300_000).decode()
     assert post(client, hip_auth, "prescription", payload).status_code == 200
     row = ApiAuditLog.query.filter_by(route="/api/v1/fhir/prescription").one()
-    stored = row.request_body["binaryDocument"]["base64Data"]
-    assert len(stored) < 1100 and "more characters" in stored
-    assert row.request_body["patient"]["name"] == "Ravi Kumar"
+    assert row.http_status == 200
+    assert row.request_body == {"note": "not stored: health record or key material"}
+    assert "Ravi Kumar" not in json.dumps(row.request_body)
+
+
+def test_the_audit_log_never_keeps_private_keys_or_the_record_of_encrypt_and_decrypt(client, hip_auth):
+    from src.app.models import ApiAuditLog
+    hiu = client.get("/api/v1/fhir/keys", headers=hip_auth).get_json()
+    sender = client.get("/api/v1/fhir/keys", headers=hip_auth).get_json()
+    plain = json.dumps({"resourceType": "Bundle", "patient": "Ravi Kumar"})
+    enc = client.post("/api/v1/fhir/encrypt", headers=hip_auth, json={
+        "receiverPublicKey": hiu["publicKey"], "receiverNonce": hiu["nonce"], "senderPrivateKey": sender["privateKey"],
+        "senderPublicKey": sender["publicKey"], "senderNonce": sender["nonce"], "plainTextData": plain}).get_json()
+    assert client.post("/api/v1/fhir/decrypt", headers=hip_auth, json={
+        "receiverPrivateKey": hiu["privateKey"], "receiverNonce": hiu["nonce"], "senderPublicKey": enc["keyToShare"],
+        "senderNonce": sender["nonce"], "encryptedData": enc["encryptedData"]}).status_code == 200
+    stored = json.dumps([r.request_body for r in ApiAuditLog.query.filter(ApiAuditLog.route.like("/api/v1/fhir/%")).all()])
+    for secret in (hiu["privateKey"], sender["privateKey"], "Ravi Kumar", enc["encryptedData"][:40]):
+        assert secret not in stored
+
+
+def test_the_audit_log_masks_private_keys_and_records_on_any_route(client, hip_auth):
+    from src.app.models import ApiAuditLog
+    client.post("/api/v1/hip/sms/notify", headers=hip_auth, json={
+        "senderPrivateKey": "PRIVATE-KEY-VALUE", "receiverPrivateKey": "OTHER-PRIVATE-KEY", "plainTextData": "THE RECORD"})
+    row = ApiAuditLog.query.filter_by(route="/api/v1/hip/sms/notify").one()
+    assert row.request_body["senderPrivateKey"] == "***" and row.request_body["receiverPrivateKey"] == "***"
+    assert row.request_body["plainTextData"] == "***"

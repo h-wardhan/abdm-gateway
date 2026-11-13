@@ -15,6 +15,9 @@ from src.utils.masking import mask_payload, shorten_payload
 logger = logging.getLogger(__name__)
 
 AUDITED_PREFIX = "/api/"
+# Routes whose bodies are the patient's health record or key material: the audit row keeps the call, never the body
+# (the masked, shortened copy of a FHIR payload would still hold names, ABHA addresses and medicines).
+NO_BODY_PREFIXES = ("/api/v1/fhir/",)
 
 
 def _error_code(response):
@@ -22,6 +25,14 @@ def _error_code(response):
         return None
     body = response.get_json(silent=True) or {}
     return ((body.get("message") or {}).get("error") or {}).get("code") if isinstance(body.get("message"), dict) else None
+
+
+def _audited_body():
+    if not request.is_json:
+        return None
+    if request.path.startswith(NO_BODY_PREFIXES):
+        return {"note": "not stored: health record or key material"}
+    return mask_payload(shorten_payload(request.get_json(silent=True)))
 
 
 def init_audit(app):
@@ -42,7 +53,7 @@ def init_audit(app):
                 abdm_status=getattr(g, "abdm_status", None),
                 latency_ms=getattr(g, "latency_ms", None),
                 ip=client_ip(),
-                request_body=mask_payload(shorten_payload(request.get_json(silent=True))) if request.is_json else None,
+                request_body=_audited_body(),
             ))
             db.session.commit()
         except Exception:  # noqa: BLE001

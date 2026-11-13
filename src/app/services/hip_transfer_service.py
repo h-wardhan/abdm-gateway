@@ -73,8 +73,52 @@ def register_request(event, original, hi_request, transaction_id):
     row.request_id = event.request_id
     row.data_push_url = hi_request.get("dataPushUrl") or row.data_push_url
     row.key_expiry = hip_consent_service.parse_time(key.get("expiry")) or row.key_expiry
+    row.hiu_public_key = _canonical_key(key.get("keyValue")) or row.hiu_public_key
+    nonce = (hi_request.get("keyMaterial") or {}).get("nonce")
+    row.hiu_nonce = str(nonce)[:64] if nonce else row.hiu_nonce
     db.session.commit()
     return row
+
+
+def _canonical_key(value):
+    """One spelling for a public key (raw point or X.509 in, X.509 out) so two spellings of a key compare equal."""
+    try:
+        return fidelius.encode_x509_b64(fidelius.parse_public_key(str(value)))
+    except fidelius.FideliusError:
+        return None
+
+
+def remember_sender_key(client, data, encrypted):
+    """An Encrypt call for a HIU key of one of this client's open transfers: remember the sender's key and nonce used.
+    The video-call flow of i-medicus sends its push with the *receiver's* nonce / key in `keyMaterial` (the HIU cannot
+    decrypt with those); the push uses what was remembered here instead, so the HIU can read the record."""
+    receiver = _canonical_key(v.pick(data, "receiverPublicKey"))
+    nonce = v.pick(data, "receiverNonce")
+    if not receiver or not nonce:
+        return
+    rows = HipTransfer.query.filter(HipTransfer.api_client_id == client.id, HipTransfer.hiu_public_key == receiver,
+                                    HipTransfer.hiu_nonce == str(nonce)[:64],
+                                    HipTransfer.status.in_((hs.TRANSFER_ACKNOWLEDGED, hs.TRANSFER_PUSH_QUEUED))).all()
+    for row in rows:
+        row.sender_public_key = encrypted["keyToShare"]
+        row.sender_nonce = str(v.pick(data, "senderNonce"))[:64]
+    if rows:
+        db.session.commit()
+
+
+def _use_sender_key(transfer, body):
+    """Put the key and nonce the record was encrypted with into the push body when the client sent others."""
+    if not transfer.sender_public_key or not transfer.sender_nonce:
+        return
+    material = body["keyMaterial"]
+    given_key = material["dhPublicKey"]["keyValue"]
+    if material["nonce"] == transfer.sender_nonce and _canonical_key(given_key) == _canonical_key(
+            transfer.sender_public_key):
+        return
+    logger.warning("push: keyMaterial replaced by the sender key and nonce used to encrypt", extra={
+        "transaction_id": transfer.transaction_id})
+    material["nonce"] = transfer.sender_nonce
+    material["dhPublicKey"]["keyValue"] = transfer.sender_public_key
 
 
 def _get(client, transaction_id):
@@ -231,6 +275,7 @@ def push(client, data):
         _fail(transfer, exc.message)
         raise
     body = _push_body(data, consent)
+    _use_sender_key(transfer, body)
     references = [e["careContextReference"] for e in body["entries"]]
 
     transfer.attempts += 1

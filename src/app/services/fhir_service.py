@@ -15,6 +15,47 @@ def convert(hi_type, payload, client):
     return bundle
 
 
+def legacy_prescription_payload(data, client):
+    """The payload of the prescription builder from the body i-medicus' video-call flow sent VCDoctor's
+    `ConvertPrescription`: `{prescriptionId, date, patient{id, name}, doctor{id, name}, medicines[{name, dosage,
+    frequency, duration, instructions}]}`. That body has no ABHA address, licence number or clinic name, so the
+    patient's and doctor's own ids stand in for the identifier values (an optional `healthId` / `licenseNumber` in the
+    body wins) and the clinic is the client."""
+    if not isinstance(data, dict):
+        raise fhir.InvalidRecord("The body must be a JSON object")
+    patient, doctor = data.get("patient") or {}, data.get("doctor") or {}
+    if not isinstance(patient, dict) or not isinstance(doctor, dict):
+        raise fhir.InvalidRecord("patient and doctor must be objects", details={"field": "patient"})
+    medications = []
+    for med in data.get("medicines") or []:
+        if not isinstance(med, dict):
+            continue
+        parts = [f"Qty {med['dosage']}" if med.get("dosage") not in (None, "") else "",
+                 f"Frequency {med['frequency']}" if med.get("frequency") not in (None, "") else "",
+                 f"for {med['duration']} days" if med.get("duration") not in (None, "") else "",
+                 str(med.get("instructions") or "")]
+        medications.append({"display": str(med.get("name") or "").strip() or None,
+                            "dosageText": " ".join(p for p in parts if p) or None,
+                            "routeCode": "26643006", "routeDisplay": "Oral"})
+    return {
+        "medications": medications,
+        "patient": {"name": patient.get("name"), "healthId": patient.get("healthId") or patient.get("id"),
+                    "gender": patient.get("gender"), "birthDate": patient.get("birthDate")},
+        "practitioner": {"name": doctor.get("name"), "licenseNumber": doctor.get("licenseNumber") or doctor.get("id")},
+        "organization": {"name": getattr(client, "name", None)},
+        "encounter": {"encounterId": data.get("prescriptionId"), "classCode": "AMB", "classDisplay": "Ambulatory"},
+    }
+
+
+def convert_legacy_prescription(data, client):
+    payload = legacy_prescription_payload(data, client)
+    when = fhir.util.parse(data.get("date")) if isinstance(data, dict) else None
+    bundle = fhir.build_record("Prescription", payload, hip_id=getattr(client, "hip_id", None), when=when)
+    logger.info("fhir: legacy prescription bundle built for client %s (%d entries)", getattr(client, "id", None),
+                len(bundle["entry"]))
+    return bundle
+
+
 def check(hi_type, bundle):
     """Validation result for a Bundle someone else made (used by the validate route)."""
     if hi_type not in validate.RECORDS:

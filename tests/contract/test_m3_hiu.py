@@ -205,6 +205,29 @@ def test_consent_fetch_needs_a_consent_id_and_is_queued_when_abdm_is_down(client
     assert res.status_code == 200 and res.get_json()["data"]["status"] == "queued"
 
 
+# ---- consent request status -----------------------------------------------------------------------------------------
+
+CONSENT_STATUS = f"{HIECM}/consent/v3/request/status"
+
+
+def test_consent_status_sends_the_consent_request_id_for_the_hiu(client, jwks, hip, auth):
+    jwks.add(responses.POST, SESSION, json={"accessToken": "gw-token", "expiresIn": 1200})
+    jwks.add(responses.POST, CONSENT_STATUS, json={}, status=202)
+    res = post(client, auth, "consent/status", {"consentRequestId": REQ, "hipId": HIP_ID})
+    assert res.status_code == 200 and res.get_json()["data"] == {"hipId": HIP_ID, "status": "sent"}
+    request, body = sent(jwks, CONSENT_STATUS)
+    assert body == {"consentRequestId": REQ} and request.headers["X-HIU-ID"] == HIP_ID
+    assert request.headers["X-CM-ID"] == "sbx" and request.headers["Authorization"] == "Bearer gw-token"
+
+
+def test_consent_status_needs_the_request_id_and_is_queued_when_abdm_is_down(client, jwks, hip, auth):
+    assert post(client, auth, "consent/status", {"hipId": HIP_ID}).status_code == 400
+    jwks.add(responses.POST, SESSION, json={"accessToken": "gw-token", "expiresIn": 1200})
+    jwks.add(responses.POST, CONSENT_STATUS, json={}, status=503)
+    res = post(client, auth, "consent/status", {"consentRequestId": REQ, "hipId": HIP_ID})
+    assert res.status_code == 200 and res.get_json()["data"]["status"] == "queued"
+
+
 # ---- health-information request -------------------------------------------------------------------------------------
 
 def hi_body(**changes):

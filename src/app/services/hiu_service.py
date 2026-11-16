@@ -12,7 +12,7 @@ bodies and does the protocol (facility header, REQUEST-ID, matching an answer to
 """
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from flask import request
@@ -59,6 +59,19 @@ def _time(value, field, future=False):
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
+def _range_end(value):
+    """The end of the requested date range. i-medicus' form takes a date only and sends it as midnight
+    (`2026-11-16T00:00:00.000Z`): ABDM then leaves out every care context of that day, so the patient's app does not list
+    today's visits (seen on the sandbox, 16 Nov 2026: with a real time they appeared). A midnight `toDate` therefore means
+    "up to the end of that day", and never later than a minute ago (ABDM refuses a future date). Any other time is kept."""
+    parsed = hip_consent_service.parse_time(value)
+    if parsed is None or (parsed.hour, parsed.minute, parsed.second, parsed.microsecond) != (0, 0, 0, 0):
+        return value
+    latest = datetime.now(timezone.utc) - timedelta(minutes=1)
+    widened = min(parsed.replace(hour=23, minute=59, second=59), latest)
+    return widened.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
 def _hi_types(data):
     types = data.get("hiType") if data.get("hiType") is not None else data.get("hiTypes")
     types = [types] if isinstance(types, str) else types
@@ -88,7 +101,7 @@ def consent_init(client, data):
     system = v.pick(data, "requesterSystem") or _REQUESTER_SYSTEMS.get(requester_type)
     if system:
         identifier["system"] = system
-    start, end = _time(v.pick(data, "fromDate"), "fromDate"), _time(v.pick(data, "toDate"), "toDate")
+    start, end = _time(v.pick(data, "fromDate"), "fromDate"), _range_end(_time(v.pick(data, "toDate"), "toDate"))
     if start > end:
         raise ValidationError("fromDate must not be after toDate", details={"field": "fromDate"})
     body = {"consent": {

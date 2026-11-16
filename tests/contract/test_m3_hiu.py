@@ -74,9 +74,35 @@ def test_consent_init_sends_abdms_v3_body_with_the_request_id_i_medicus_keeps(cl
     assert consent["hiTypes"] == ["Prescription", "OPConsultation"]
     permission = consent["permission"]
     assert permission["accessMode"] == "VIEW"
-    assert permission["dateRange"] == {"from": "2026-10-01T00:00:00.000Z", "to": "2026-11-01T00:00:00.000Z"}
+    # i-medicus sends the date only (midnight): the range runs to the end of that day, so that day's visits are included
+    assert permission["dateRange"] == {"from": "2026-10-01T00:00:00.000Z", "to": "2026-11-01T23:59:59.000Z"}
     assert permission["dataEraseAt"].endswith(".000Z")  # i-medicus' microseconds are normalised to ABDM's format
     assert permission["frequency"] == {"unit": "HOUR", "value": 0, "repeats": 0}
+
+
+def _sent_range(abdm_up):
+    return sent(abdm_up, CONSENT_INIT)[1]["consent"]["permission"]["dateRange"]
+
+
+def test_a_date_only_to_date_for_today_runs_to_a_minute_ago_not_midnight(client, abdm_up, hip, auth):
+    """Midnight of today leaves today's care contexts out of the patient's list; ABDM refuses a future time."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+    post(client, auth, "consent/init", init_body(fromDate="2026-01-01T00:00:00.000Z", toDate=today))
+    end = datetime.strptime(_sent_range(abdm_up)["to"], "%Y-%m-%dT%H:%M:%S.000Z").replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    assert now - timedelta(minutes=2) <= end <= now - timedelta(seconds=30)
+
+
+def test_a_date_only_to_date_in_the_future_is_capped_at_now(client, abdm_up, hip, auth):
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
+    post(client, auth, "consent/init", init_body(fromDate="2026-01-01T00:00:00.000Z", toDate=tomorrow))
+    end = datetime.strptime(_sent_range(abdm_up)["to"], "%Y-%m-%dT%H:%M:%S.000Z").replace(tzinfo=timezone.utc)
+    assert end < datetime.now(timezone.utc)
+
+
+def test_a_to_date_with_a_time_is_sent_as_it_is(client, abdm_up, hip, auth):
+    post(client, auth, "consent/init", init_body(toDate="2026-11-01T10:30:00.000Z"))
+    assert _sent_range(abdm_up)["to"] == "2026-11-01T10:30:00.000Z"
 
 
 def test_the_purpose_can_be_its_code_or_its_text(client, abdm_up, hip, auth):

@@ -243,6 +243,11 @@ the same consent arrives; then the notice is released and the request is deliver
 timer thread of the worker (the worker itself is busy with the notice during i-medicus' sleep). A grant that gets no request
 is delivered when the hold ends. Revoked and expired notices are not held.
 
+**Consent range** (`hiu_service._range_end`). i-medicus' consent form takes a date and sends `toDate` as midnight
+(`2026-11-16T00:00:00.000Z`). ABDM then leaves out the care contexts of that day: on 16 Nov 2026 the patient's app listed only old
+visits, and with a real time in `toDate` the new ones appeared. The gateway now treats a midnight `toDate` as "to the end of
+that day, and never later than a minute ago" (ABDM refuses a future date); a `toDate` with another time is sent as it is.
+
 Also: the description of a FAILED transfer notification is now letters, digits, spaces and `. _ -` only (ABDM answered
 "Invalid description" to the HIU's JSON error copied in).
 

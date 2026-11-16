@@ -303,3 +303,128 @@ def test_rubbish_bodies_are_stored_and_queued_without_a_crash(threads, client, j
     w.abdm_calls_gateway("v3/hip/health-information/request", {"hiRequest": ["x"]}, "r-2")
     w.abdm_calls_gateway("v3/hip/health-information/request", {"hiRequest": {"consent": "x"}}, "r-3")
     assert OutboxJob.query.count() == 3 and threads == []
+
+
+# ---- the worker runs jobs side by side, HIP consent notices one at a time ---------------------------------------------
+
+class FakePool:
+    """Records what the worker hands over; futures that are never done unless the test says so."""
+    class Future:
+        def __init__(self):
+            self.finished = False
+
+        def done(self):
+            return self.finished
+
+    def __init__(self):
+        self.submitted = []
+
+    def submit(self, fn, *args):
+        future = FakePool.Future()
+        self.submitted.append((future, args))
+        return future
+
+
+def _statuses():
+    from src.app.extensions import db
+    db.session.expire_all()
+    return {j.id: j.status for j in OutboxJob.query.all()}
+
+
+def _job_ids(world, kind_path):
+    return [j.id for j in OutboxJob.query.order_by(OutboxJob.id).all()
+            if CallbackEvent.query.get(j.callback_event_id).path.endswith(kind_path)]
+
+
+def test_a_hiu_callback_is_not_stuck_behind_a_consent_notice_that_is_waiting(app, client, jwks, http, hip, auth):
+    """The deadlock of 16 Nov 2026: the notice waits for the request, the request needs the HIU callback queued behind it."""
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-n1")
+    w.abdm_calls_gateway("v3/hiu/consent/request/notify", {"notification": {"status": "GRANTED"}}, "r-h1")
+    pool, inflight = FakePool(), {}
+    assert worker.dispatch(app, pool, inflight, 4) == 2        # both at once
+    assert set(_statuses().values()) == {"processing"}
+
+
+def test_two_consent_notices_never_run_together(app, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    other = _consent_notification()
+    other["notification"]["consentId"] = other["notification"]["consentDetail"]["consentId"] = "second-consent"
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-n1")
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", other, "r-n2")
+    first, second = _job_ids(w, "consent/request/hip/notify")
+    pool, inflight = FakePool(), {}
+    assert worker.dispatch(app, pool, inflight, 4) == 1
+    assert _statuses()[first] == "processing" and _statuses()[second] == "pending"
+    assert worker.dispatch(app, pool, inflight, 4) == 0         # still busy with the first
+    (future, _args), = pool.submitted
+    future.finished = True
+    assert worker.dispatch(app, pool, inflight, 4) == 1         # the first is done: the second may start
+    assert _statuses()[second] == "processing"
+
+
+def test_the_request_runs_while_its_notice_is_in_flight(app, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-n1")
+    pool, inflight = FakePool(), {}
+    worker.dispatch(app, pool, inflight, 4)
+    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
+    assert worker.dispatch(app, pool, inflight, 4) == 1
+    assert len(pool.submitted) == 2
+
+
+def test_the_worker_never_runs_more_jobs_than_it_has_slots(app, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    for n in range(5):
+        w.abdm_calls_gateway("v3/hiu/consent/request/notify", {"notification": {"status": "GRANTED"}}, f"r-{n}")
+    pool, inflight = FakePool(), {}
+    assert worker.dispatch(app, pool, inflight, 3) == 3
+    assert worker.dispatch(app, pool, inflight, 3) == 0
+    assert list(_statuses().values()).count("pending") == 2
+
+
+def test_a_job_still_running_is_not_claimed_again(app, client, jwks, http, hip, auth):
+    from src.app.extensions import db
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/hiu/consent/request/notify", {"notification": {"status": "GRANTED"}}, "r-1")
+    pool, inflight = FakePool(), {}
+    worker.dispatch(app, pool, inflight, 4)
+    job = OutboxJob.query.one()
+    job.locked_until = utcnow() - timedelta(seconds=5)          # its lock ran out while the thread still runs
+    db.session.commit()
+    assert worker.dispatch(app, pool, inflight, 4) == 0 and len(pool.submitted) == 1
+
+
+def test_notices_of_different_patients_run_together_and_of_one_patient_one_at_a_time(app, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+
+    def notice(consent, patient):
+        body = _consent_notification()
+        body["notification"]["consentId"] = body["notification"]["consentDetail"]["consentId"] = consent
+        body["notification"]["consentDetail"]["patient"] = {"id": patient}
+        return body
+
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", notice("c-1", "ravi@sbx"), "r-1")
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", notice("c-2", "asha@sbx"), "r-2")
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", notice("c-3", "ravi@sbx"), "r-3")
+    first, second, third = _job_ids(w, "consent/request/hip/notify")
+    pool, inflight = FakePool(), {}
+    assert worker.dispatch(app, pool, inflight, 8) == 2         # ravi's first and asha's: side by side
+    status = _statuses()
+    assert (status[first], status[second], status[third]) == ("processing", "processing", "pending")
+    pool.submitted[0][0].finished = True                         # ravi's first is done
+    assert worker.dispatch(app, pool, inflight, 8) == 1
+    assert _statuses()[third] == "processing"
+
+
+def test_too_many_waiting_acknowledgements_are_answered_at_once(app, ack_wait, client, jwks, http, hip, auth):
+    app.config["HIP_MAX_ACK_WAITS"] = 1
+    hip_pairing._slots.clear()
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    assert hip_pairing._wait_slots(1).acquire(blocking=False)    # one acknowledgement already waits
+    try:
+        assert hip_pairing.wait_for_request(CONSENT_ID) is False and ack_wait == []
+    finally:
+        hip_pairing._wait_slots(1).release()
+        hip_pairing._slots.clear()

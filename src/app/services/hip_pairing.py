@@ -36,6 +36,15 @@ from src.app.outbox import engine
 
 logger = logging.getLogger(__name__)
 
+_slots = {}
+
+
+def _wait_slots(limit):
+    """One counter per process: how many acknowledgements may be waiting at once."""
+    if limit not in _slots:
+        _slots[limit] = threading.BoundedSemaphore(limit)
+    return _slots[limit]
+
 NOTICE = "consent/request/hip/notify"
 REQUEST = "hip/health-information/request"
 GRANTED = "GRANTED"
@@ -113,13 +122,22 @@ def wait_for_request(consent_id):
     consent = HipConsent.query.filter_by(consent_id=str(consent_id)).first()
     if consent is None or consent.status != GRANTED:
         return False
-    deadline = time.monotonic() + wait
-    while time.monotonic() < deadline:
-        db.session.expire_all()
-        if HipTransfer.query.filter_by(consent_id=str(consent_id)).first() is not None:
-            # i-medicus acknowledges the request and then fetches the sender keys: give it a moment
-            time.sleep(config["HIP_KEYS_SETTLE_SECONDS"])
-            return True
-        time.sleep(0.5)
-    logger.warning("consent notice: no health-information request arrived in time", extra={"consent_id": consent_id})
-    return False
+    slots = _wait_slots(config["HIP_MAX_ACK_WAITS"])
+    if not slots.acquire(blocking=False):  # a flood of notices: do not tie up every web thread, answer at once
+        logger.warning("consent notice: too many acknowledgements waiting, answering at once",
+                       extra={"consent_id": consent_id})
+        return False
+    try:
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            db.session.expire_all()
+            if HipTransfer.query.filter_by(consent_id=str(consent_id)).first() is not None:
+                # i-medicus acknowledges the request and then fetches the sender keys: give it a moment
+                time.sleep(config["HIP_KEYS_SETTLE_SECONDS"])
+                return True
+            time.sleep(0.5)
+        logger.warning("consent notice: no health-information request arrived in time",
+                       extra={"consent_id": consent_id})
+        return False
+    finally:
+        slots.release()

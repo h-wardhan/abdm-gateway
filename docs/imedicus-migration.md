@@ -249,6 +249,24 @@ only when the request of that consent has been acknowledged and its keys fetched
 with the notice for that time, so the request is delivered by a thread of its own as soon as it arrives. Only GRANTED consents
 and first answers wait; a repeated answer or a revoked consent is answered at once.
 
+**The worker runs jobs side by side** (`WORKER_CONCURRENCY`, 4; `outbox/worker.py`). The consent notice now waits for the
+request, and that request needs the HIU callbacks of the same consent (notify, fetch, then the HIU's own request). One worker
+running one job at a time deadlocked on 16 Nov 2026: ABDM sent the HIP notice before the HIU notice, the HIP notice waited for a
+request that only exists after the HIU notice, which was queued behind it (the HIU notice reached i-medicus 90 s late, only after
+the 25 s wait ran out and i-medicus had pushed the previous round's records). Jobs now run in a pool; the HIP consent notices
+go **one at a time**, because i-medicus keeps the consent id and transaction of a care context on one row and two notices handled
+together overwrite each other. `WORKER_CONCURRENCY=1` is the old behaviour.
+
+**Scale and what limits it.** i-medicus holds a PHP process for 17-45 s per consent notice (5 s sleep, 10 s sleep, the PDF, the
+keys), and the gateway holds a thread for the same time (it waits for i-medicus' answer). Throughput is therefore
+`threads / ~30 s`: 4 threads about 500 notices an hour, 16 about 1,900, 200 about 24,000. Lakhs an hour would need ~850 threads
+here and as many Apache processes in i-medicus, which is not practical: the lasting fix is in i-medicus (drop the two sleeps and
+build the records at the end of the health-information request handler, once its keys exist), after which a notice takes
+milliseconds and the gateway's ack wait is no longer needed. What the gateway does meanwhile: `WORKER_CONCURRENCY` (16)
+jobs side by side; consent notices of **one patient** one at a time (they overwrite each other's row in i-medicus), of
+different patients together; gunicorn `gthread` (`GUNICORN_THREADS`, 16 per process) so a held answer costs a thread, not a
+process; at most `HIP_MAX_ACK_WAITS` (48) answers held per web process, beyond that they are answered at once.
+
 **Consent range** (`hiu_service._range_end`). i-medicus' consent form takes a date and sends `toDate` as midnight
 (`2026-11-16T00:00:00.000Z`). ABDM then leaves out the care contexts of that day: on 16 Nov 2026 the patient's app listed only old
 visits, and with a real time in `toDate` the new ones appeared. The gateway now treats a midnight `toDate` as "to the end of

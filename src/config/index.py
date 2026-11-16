@@ -154,6 +154,8 @@ class Config:
     # HIP_KEYS_SETTLE_SECONDS to fetch its sender keys. 0 = answer at once. See services/hip_pairing.py.
     HIP_CONSENT_ACK_WAIT_SECONDS = _env_int("HIP_CONSENT_ACK_WAIT_SECONDS", 25)
     HIP_KEYS_SETTLE_SECONDS = _env_int("HIP_KEYS_SETTLE_SECONDS", 4)
+    # acknowledgements held at once per web process (each one occupies a web thread); beyond it they are answered at once
+    HIP_MAX_ACK_WAITS = _env_int("HIP_MAX_ACK_WAITS", 48)
     # Link token: how long a link call waits for the token ABDM is about to send, and how long a request for one counts
     # as "on its way" (no second request meanwhile: ABDM answers "Duplicate Link token request")
     HIP_LINK_TOKEN_WAIT_SECONDS = _env_int("HIP_LINK_TOKEN_WAIT_SECONDS", 10)
@@ -175,6 +177,9 @@ class Config:
     OUTBOX_MAX_ATTEMPTS = _env_int("OUTBOX_MAX_ATTEMPTS", 6)
     OUTBOX_BACKOFF_SECONDS = _env_int_list("OUTBOX_BACKOFF_SECONDS", "2,10,60,300,900,3600")
     OUTBOX_LOCK_SECONDS = _env_int("OUTBOX_LOCK_SECONDS", 60)
+    # jobs the worker runs at the same time (HIP consent notices still go one at a time). A notice waits for the
+    # health-information request, which needs the HIU callbacks behind it in the queue: one at a time deadlocks.
+    WORKER_CONCURRENCY = _env_int("WORKER_CONCURRENCY", 16)
     OUTBOX_HTTP_TIMEOUT = _env_int("OUTBOX_HTTP_TIMEOUT", 15)
 
     LOG_LEVEL = _env("LOG_LEVEL", "INFO")
@@ -220,6 +225,7 @@ class TestingConfig(Config):
     CALLBACK_BLOCKED_HOSTS = ["app.i-medicus.in"]
     PUSH_ALLOW_HTTP = False
     PUSH_ALLOW_PRIVATE_URLS = False
+    WORKER_CONCURRENCY = 1             # the tests of the worker threads turn it on
     HIP_CONSENT_ACK_WAIT_SECONDS = 0   # the tests of the wait turn it on
     HIP_KEYS_SETTLE_SECONDS = 0
     HIP_LINK_TOKEN_WAIT_SECONDS = 0

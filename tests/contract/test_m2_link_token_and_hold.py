@@ -428,3 +428,16 @@ def test_too_many_waiting_acknowledgements_are_answered_at_once(app, ack_wait, c
     finally:
         hip_pairing._wait_slots(1).release()
         hip_pairing._slots.clear()
+
+
+def test_a_long_queue_of_one_patients_notices_does_not_starve_the_other_jobs(app, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    for n in range(120):                                          # more than the dispatcher's look-ahead window
+        body = _consent_notification()
+        body["notification"]["consentId"] = body["notification"]["consentDetail"]["consentId"] = f"c-{n}"
+        w.abdm_calls_gateway("v3/consent/request/hip/notify", body, f"r-n{n}")
+    w.abdm_calls_gateway("v3/hiu/consent/request/notify", {"notification": {"status": "GRANTED"}}, "r-late")
+    pool, inflight = FakePool(), {}
+    assert worker.dispatch(app, pool, inflight, 4) == 2           # one of the patient's notices + the job behind them
+    statuses = list(_statuses().values())
+    assert statuses.count("processing") == 2 and statuses.count("pending") == 119

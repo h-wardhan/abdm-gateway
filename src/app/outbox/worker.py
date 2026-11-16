@@ -47,6 +47,7 @@ def tick():
 
 NOTICE_LANE = "notice"
 OTHER_LANE = "other"
+_LANES = {}  # job id -> (lane, key): a job waiting for its patient is looked at every pass; its lane does not change
 
 
 def lane_of(job_id):
@@ -85,19 +86,33 @@ def dispatch(app, pool, inflight, concurrency):
     running = {job_id for job_id, _lane, _key in inflight.values()}
     busy = {key for _job_id, lane, key in inflight.values() if lane == NOTICE_LANE}
     started = 0
-    for job_id in engine.due_ids(concurrency * 4 + 8):
-        if len(inflight) >= concurrency:
+    seen = set()
+    # Walk the queue in batches until the slots are full or nothing new is due. Jobs that must wait (a patient whose notice is
+    # already running) are skipped, but they must not hide the jobs behind them: 100 queued notices of one patient used to fill
+    # the window and starve everything else.
+    for _round in range(50):
+        batch = engine.due_ids(concurrency * 4 + 8, exclude=seen)
+        if not batch or len(inflight) >= concurrency:
             break
-        if job_id in running:
-            continue
-        lane, key = lane_of(job_id)
-        if lane == NOTICE_LANE and key in busy:
-            continue
-        if engine._claim(job_id, utcnow()):
-            inflight[pool.submit(_run_in_thread, app, job_id)] = (job_id, lane, key)
-            if lane == NOTICE_LANE:
-                busy.add(key)
-            started += 1
+        for job_id in batch:
+            seen.add(job_id)
+            if len(inflight) >= concurrency:
+                break
+            if job_id in running:
+                continue
+            if job_id not in _LANES:
+                if len(_LANES) > 20000:
+                    _LANES.clear()
+                _LANES[job_id] = lane_of(job_id)
+            lane, key = _LANES[job_id]
+            if lane == NOTICE_LANE and key in busy:
+                continue
+            if engine._claim(job_id, utcnow()):
+                _LANES.pop(job_id, None)
+                inflight[pool.submit(_run_in_thread, app, job_id)] = (job_id, lane, key)
+                if lane == NOTICE_LANE:
+                    busy.add(key)
+                started += 1
     return started
 
 

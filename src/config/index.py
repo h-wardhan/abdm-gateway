@@ -169,6 +169,9 @@ class Config:
     PUSH_ALLOW_HTTP = _env_bool("PUSH_ALLOW_HTTP", False)                  # staging HIUs without TLS
     PUSH_ALLOW_PRIVATE_URLS = _env_bool("PUSH_ALLOW_PRIVATE_URLS", False)  # local development only
     PUSH_TIMEOUT_CONNECT = _env_int("PUSH_TIMEOUT_CONNECT", 5)
+    # records per page of a push (ABDM paging). 1: every record on its own page, so a receiver that reads only the first
+    # entry of a push (i-medicus) gets all of them. 0: one request with every record.
+    HIP_PUSH_ENTRIES_PER_PAGE = _env_int("HIP_PUSH_ENTRIES_PER_PAGE", 1)
     PUSH_TIMEOUT_READ = _env_int("PUSH_TIMEOUT_READ", 60)
 
     # --- Outbox / retry worker ---
@@ -226,6 +229,7 @@ class TestingConfig(Config):
     PUSH_ALLOW_HTTP = False
     PUSH_ALLOW_PRIVATE_URLS = False
     WORKER_CONCURRENCY = 1             # the tests of the worker threads turn it on
+    HIP_PUSH_ENTRIES_PER_PAGE = 0      # the tests of the paging turn it on
     HIP_CONSENT_ACK_WAIT_SECONDS = 0   # the tests of the wait turn it on
     HIP_KEYS_SETTLE_SECONDS = 0
     HIP_LINK_TOKEN_WAIT_SECONDS = 0

@@ -92,13 +92,16 @@ def _claim(job_id, now):
     return result.rowcount == 1
 
 
-def due_ids(limit, now=None):
-    """Ids of the jobs that are due (oldest first), not claimed."""
+def due_ids(limit, now=None, exclude=()):
+    """Ids of the jobs that are due (oldest first), not claimed. `exclude`: ids the caller has already looked at."""
     now = now or utcnow()
-    return [row[0] for row in db.session.query(OutboxJob.id).filter(or_(
+    query = db.session.query(OutboxJob.id).filter(or_(
         (OutboxJob.status == oj.PENDING) & (OutboxJob.next_attempt_at <= now),
         (OutboxJob.status == oj.PROCESSING) & (OutboxJob.locked_until < now),
-    )).order_by(OutboxJob.next_attempt_at).limit(limit).all()]
+    ))
+    if exclude:
+        query = query.filter(OutboxJob.id.notin_(list(exclude)))
+    return [row[0] for row in query.order_by(OutboxJob.next_attempt_at).limit(limit).all()]
 
 
 def claim_due(limit):

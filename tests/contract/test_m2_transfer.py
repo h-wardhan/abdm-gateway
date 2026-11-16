@@ -568,3 +568,97 @@ def test_a_failure_description_has_no_symbols_abdm_refuses(flow):
     text = n["statusNotification"]["statusResponses"][0]["description"]
     assert text == "HIU answered HTTP 400 code ABDM-9999 message Invalid Consent artefact id"
     assert not set(text) & set('{}":;[]')
+
+
+# ---- paging: one record per page, because i-medicus' receiver reads only the first entry of a push ----------------------
+
+@pytest.fixture
+def paged(app):
+    app.config["HIP_PUSH_ENTRIES_PER_PAGE"] = 1
+
+
+def test_two_records_go_as_two_pages_the_receiver_can_each_read(paged, flow):
+    flow.acknowledged()
+    sender, encrypted = flow.encrypt()
+    flow.http.add(responses.POST, HIU_URL, json={}, status=200)
+    res = flow.push(flow.push_body(sender, encrypted, references=("CC-1", "CC-2")))
+    assert res.status_code == 200 and res.get_json()["data"]["status"] == "sent"
+    first, second = flow.received_by_hiu()
+    assert (first["pageNumber"], first["pageCount"]) == (0, 2) and (second["pageNumber"], second["pageCount"]) == (1, 2)
+    assert [e["careContextReference"] for e in first["entries"]] == ["CC-1"]
+    assert [e["careContextReference"] for e in second["entries"]] == ["CC-2"]
+    assert first["transactionId"] == second["transactionId"] == TXN and first["keyMaterial"] == second["keyMaterial"]
+    assert flow.transfer().status == "PUSHED" and flow.transfer().care_contexts == ["CC-1", "CC-2"]
+    assert flow.notify().status_code == 200                      # one status for the whole transfer
+
+
+def test_a_single_record_is_still_one_page(paged, flow):
+    flow.acknowledged()
+    sender, encrypted = flow.encrypt()
+    flow.http.add(responses.POST, HIU_URL, json={}, status=200)
+    flow.push(flow.push_body(sender, encrypted))
+    (only,) = flow.received_by_hiu()
+    assert (only["pageNumber"], only["pageCount"]) == (0, 1)
+
+
+def test_paging_the_client_chose_is_kept(paged, flow):
+    flow.acknowledged()
+    sender, encrypted = flow.encrypt()
+    flow.http.add(responses.POST, HIU_URL, json={}, status=200)
+    flow.push(flow.push_body(sender, encrypted, references=("CC-1", "CC-2"), pageNumber=1, pageCount=3))
+    (only,) = flow.received_by_hiu()
+    assert (only["pageNumber"], only["pageCount"]) == (1, 3) and len(only["entries"]) == 2
+
+
+def test_paging_can_be_turned_off(app, flow):
+    app.config["HIP_PUSH_ENTRIES_PER_PAGE"] = 0
+    flow.acknowledged()
+    sender, encrypted = flow.encrypt()
+    flow.http.add(responses.POST, HIU_URL, json={}, status=200)
+    flow.push(flow.push_body(sender, encrypted, references=("CC-1", "CC-2")))
+    (only,) = flow.received_by_hiu()
+    assert len(only["entries"]) == 2
+
+
+def test_when_the_second_page_fails_only_that_page_is_retried(paged, flow):
+    flow.acknowledged()
+    sender, encrypted = flow.encrypt()
+    flow.http.add(responses.POST, HIU_URL, json={}, status=200)                       # page 0 arrives
+    flow.http.add(responses.POST, HIU_URL, body=requests.ConnectionError("hiu is down"))  # page 1 does not
+    res = flow.push(flow.push_body(sender, encrypted, references=("CC-1", "CC-2")))
+    assert res.status_code == 202 and res.get_json()["data"]["status"] == "queued"
+    assert len(flow.received_by_hiu()) == 2 and flow.transfer().status == "PUSH_QUEUED"
+
+    flow.http.replace(responses.POST, HIU_URL, json={}, status=200)
+    assert run_due() == 1
+    pages = [(p["pageNumber"], [e["careContextReference"] for e in p["entries"]]) for p in flow.received_by_hiu()]
+    assert pages == [(0, ["CC-1"]), (1, ["CC-2"]), (1, ["CC-2"])]   # page 1 again, page 0 not repeated
+    assert flow.transfer().status == "PUSHED" and flow.transfer().care_contexts == ["CC-1", "CC-2"]
+
+
+def test_a_refusal_on_a_later_page_fails_the_transfer(paged, flow):
+    flow.acknowledged()
+    sender, encrypted = flow.encrypt()
+    flow.http.add(responses.POST, HIU_URL, json={}, status=200)
+    flow.http.add(responses.POST, HIU_URL, json={"error": "no"}, status=400)
+    res = flow.push(flow.push_body(sender, encrypted, references=("CC-1", "CC-2")))
+    assert res.status_code == 502 and flow.transfer().status == "FAILED"
+    (n,) = flow.abdm_notifications()
+    assert n["statusNotification"]["sessionStatus"] == "FAILED"
+
+
+def test_a_job_queued_before_paging_existed_still_runs(flow):
+    """The retry payload used to hold one `body`; a job already in the queue must keep working."""
+    flow.acknowledged()
+    sender, encrypted = flow.encrypt()
+    flow.http.add(responses.POST, HIU_URL, body=requests.ConnectionError("hiu is down"))
+    flow.push(flow.push_body(sender, encrypted))
+    job = OutboxJob.query.filter_by(kind="hiu_push").one()
+    from src.app.callbacks import vault
+    payload = json.loads(vault.open_text(job.payload_enc))
+    payload["body"] = payload.pop("pages")[0]                   # the old shape
+    job.payload_enc = vault.seal_text(json.dumps(payload))
+    from src.app.extensions import db
+    db.session.commit()
+    flow.http.replace(responses.POST, HIU_URL, json={}, status=200)
+    assert run_due() == 1 and flow.transfer().status == "PUSHED"

@@ -267,6 +267,23 @@ jobs side by side; consent notices of **one patient** one at a time (they overwr
 different patients together; gunicorn `gthread` (`GUNICORN_THREADS`, 16 per process) so a held answer costs a thread, not a
 process; at most `HIP_MAX_ACK_WAITS` (48) answers held per web process, beyond that they are answered at once.
 
+**One record per page** (`HIP_PUSH_ENTRIES_PER_PAGE`, 1; 0 = off). i-medicus builds one entry per record (Prescription,
+OPConsultation...) and sends them in one push, but its receiver decrypts only `entries[0]` (`WebhookTrait::decryptData`): on the
+sandbox a consent for two record types saved one row in `consent_health_data` (the Prescription) and the OP Consultation was
+never shown. The gateway now pushes each record as its own ABDM page (`pageNumber` from 0, `pageCount`, same transaction and key
+material), one after the other; i-medicus saves a row per page and the viewer shows every bundle. A failure on page *n* retries
+only the pages not delivered yet; a push where the client already chose its paging is left as it is. ABDM's status
+notification is still one per transaction.
+
+**What was tested** (16 Nov 2026). Automated (`tests/`, 1,080+ tests): all eight record types (Prescription, OPConsultation,
+DiagnosticReport, DischargeSummary, ImmunizationRecord, HealthDocumentRecord, WellnessRecord, Invoice) convert, validate, and
+survive Fidelius encrypt and decrypt byte for byte (`test_m2_all_record_types.py`); one consent covering all eight is pushed as
+eight pages, a HIU reads every page and ABDM gets one TRANSFERRED status for all eight care contexts. Load
+(`scripts/load_test_callbacks.py`, real threads, a real HTTP webhook): 900 callbacks (100 patients x 3 consents) were all
+delivered exactly once, none lost, never more than one notice of the same patient at a time, never more than 16 webhook calls at
+once. Not tested: Postgres under load (the run above is on a SQLite file, where every claim costs ~12 ms of disk sync, so its
+throughput says nothing about production), the held acknowledgement under many concurrent web threads, and ABDM itself under load.
+
 **Consent range** (`hiu_service._range_end`). i-medicus' consent form takes a date and sends `toDate` as midnight
 (`2026-11-16T00:00:00.000Z`). ABDM then leaves out the care contexts of that day: on 16 Nov 2026 the patient's app listed only old
 visits, and with a real time in `toDate` the new ones appeared. The gateway now treats a midnight `toDate` as "to the end of

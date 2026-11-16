@@ -220,6 +220,29 @@ def _push_body(data, consent):
                             "nonce": nonce}}
 
 
+def _pages(body):
+    """One page per HIP_PUSH_ENTRIES_PER_PAGE records (ABDM's paging: pageNumber from 0, the same transactionId and key
+    material on every page). i-medicus' receiver decrypts only `entries[0]` of a push (WebhookTrait::decryptData), so the second
+    record of a one-request push is never read: with one record per page each is delivered and saved on its own.
+    A client that already sent paging keeps it; 0 turns the splitting off."""
+    size = current_app.config.get("HIP_PUSH_ENTRIES_PER_PAGE", 1)
+    entries = body["entries"]
+    if size <= 0 or len(entries) <= size or body.get("pageCount", 1) != 1:
+        return [body]
+    chunks = [entries[i:i + size] for i in range(0, len(entries), size)]
+    return [{**body, "pageNumber": number, "pageCount": len(chunks), "entries": chunk}
+            for number, chunk in enumerate(chunks)]
+
+
+def _post_pages(url, pages):
+    """Post the pages in order. Returns (outcome, http status, message, pages not delivered yet)."""
+    for index, page in enumerate(pages):
+        outcome, http_status, message = _post(url, page)
+        if outcome != "ok":
+            return outcome, http_status, message, pages[index:]
+    return "ok", None, None, []
+
+
 def _post(url, body):
     """POST to the HIU. Returns ("ok" | "retry" | "fail", http status or None, message)."""
     config = current_app.config
@@ -280,7 +303,7 @@ def push(client, data):
     references = [e["careContextReference"] for e in body["entries"]]
 
     transfer.attempts += 1
-    outcome, http_status, message = _post(url, body)
+    outcome, http_status, message, left = _post_pages(url, _pages(body))
     if outcome == "ok":
         _mark_pushed(transfer, references)
         return _result(transfer, "sent")
@@ -292,7 +315,7 @@ def push(client, data):
     transfer.care_contexts = references
     transfer.last_error = message
     job = engine.enqueue(oj.KIND_HIU_PUSH, api_client_id=client.id,
-                         payload_enc=vault.seal_text(json.dumps({"transferId": transfer.id, "url": url, "body": body})))
+                         payload_enc=vault.seal_text(json.dumps({"transferId": transfer.id, "url": url, "pages": left})))
     db.session.commit()
     logger.warning("HIU push queued for retry", extra={"job_id": job.id, "transaction_id": transfer.transaction_id,
                                                        "error": message})
@@ -304,7 +327,8 @@ def run_push_job(job):
     try:
         payload = json.loads(vault.open_text(job.payload_enc))
         transfer = db.session.get(HipTransfer, payload["transferId"])
-        url, body = payload["url"], payload["body"]
+        url = payload["url"]
+        pages = payload.get("pages") or [payload["body"]]  # "body": a job queued before the pages existed
     except (TypeError, ValueError, KeyError, InvalidTag):
         return Fail("job has no readable payload")
     if transfer is None:
@@ -323,13 +347,15 @@ def run_push_job(job):
         return Fail(exc.message)
 
     transfer.attempts += 1
-    outcome, http_status, message = _post(url, body)
+    outcome, http_status, message, left = _post_pages(url, pages)
     if outcome == "ok":
-        _mark_pushed(transfer, transfer.care_contexts or [e["careContextReference"] for e in body["entries"]])
+        _mark_pushed(transfer, transfer.care_contexts or [e["careContextReference"] for p in pages for e in p["entries"]])
         _flush_pending(transfer)
         return Ok()
     transfer.last_error = message
     if outcome == "retry" and job.attempts < job.max_attempts:
+        # the pages that were delivered are not sent again
+        job.payload_enc = vault.seal_text(json.dumps({"transferId": transfer.id, "url": url, "pages": left}))
         db.session.commit()
         return Retry(message, http_status)
     reason = message if outcome == "fail" else f"{message}; gave up after {job.attempts} tries"

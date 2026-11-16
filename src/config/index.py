@@ -148,15 +148,12 @@ class Config:
     CALLBACK_BLOCKED_HOSTS = _env_list("CALLBACK_BLOCKED_HOSTS", "app.i-medicus.in")
     CALLBACK_RETENTION_DAYS = _env_int("CALLBACK_RETENTION_DAYS", 30)
 
-    # M2 (HIP): i-medicus builds, encrypts and pushes the records 10 seconds after a consent notice, with the keys of the
-    # health-information request that follows it. A request that comes later (the HIU fetches the consent first) finds no
-    # keys. i-medicus' notice handler sleeps 5 s, THEN saves the consent id on its rows (a request that arrives before
-    # that finds no row and is ignored), acknowledges, sleeps 10 s and builds the records: the request has to arrive in
-    # between (HIP_PAIR_DELAY_SECONDS after the notice starts). ABDM hands the HIP the request 105-115 s after the notice
-    # (sandbox, 16 Nov 2026), so the hold must be longer than that (90 s ran out just before it arrived). So the gateway holds a GRANTED consent notice until that consent's request arrives (at most this long) and
-    # hands both to i-medicus together. 0 = forward at once.
-    HIP_CONSENT_HOLD_SECONDS = _env_int("HIP_CONSENT_HOLD_SECONDS", 240)
-    HIP_PAIR_DELAY_SECONDS = _env_int("HIP_PAIR_DELAY_SECONDS", 8)
+    # M2 (HIP): i-medicus builds the records 10 s after it acknowledged a consent notice, but ABDM sends the health-information
+    # request (transaction id, HIU key) only after that acknowledgement, ~14 s later. The gateway holds its answer to the
+    # acknowledgement until that request has been handled (at most this long, then i-medicus goes on), and gives it
+    # HIP_KEYS_SETTLE_SECONDS to fetch its sender keys. 0 = answer at once. See services/hip_pairing.py.
+    HIP_CONSENT_ACK_WAIT_SECONDS = _env_int("HIP_CONSENT_ACK_WAIT_SECONDS", 25)
+    HIP_KEYS_SETTLE_SECONDS = _env_int("HIP_KEYS_SETTLE_SECONDS", 4)
     # Link token: how long a link call waits for the token ABDM is about to send, and how long a request for one counts
     # as "on its way" (no second request meanwhile: ABDM answers "Duplicate Link token request")
     HIP_LINK_TOKEN_WAIT_SECONDS = _env_int("HIP_LINK_TOKEN_WAIT_SECONDS", 10)
@@ -223,7 +220,8 @@ class TestingConfig(Config):
     CALLBACK_BLOCKED_HOSTS = ["app.i-medicus.in"]
     PUSH_ALLOW_HTTP = False
     PUSH_ALLOW_PRIVATE_URLS = False
-    HIP_CONSENT_HOLD_SECONDS = 0       # tests of the hold turn it on
+    HIP_CONSENT_ACK_WAIT_SECONDS = 0   # the tests of the wait turn it on
+    HIP_KEYS_SETTLE_SECONDS = 0
     HIP_LINK_TOKEN_WAIT_SECONDS = 0
     OUTBOX_BACKOFF_SECONDS = [2, 10, 60, 300, 900, 3600]
     OUTBOX_MAX_ATTEMPTS = 6

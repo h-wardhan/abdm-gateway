@@ -155,7 +155,9 @@ def test_tokens_of_two_patients_stay_apart(client, jwks, http, hip, auth):
     assert link_token_service.token_for_call(HIP_ID, "other@sbx", "client") == "client"
 
 
-# ---- the hold: consent notice and health-information request come together ------------------------------------------
+# ---- the consent acknowledgement waits for the health-information request ---------------------------------------------
+# i-medicus: notice -> sleeps 5 s -> saves the consent id -> acknowledges -> sleeps 10 s -> builds the records. ABDM sends the
+# request only after the acknowledgement (~14 s later). The gateway answers the acknowledgement when the request was handled.
 
 def hi_request(consent_id=CONSENT_ID):
     return {"transactionId": TXN, "hiRequest": {
@@ -165,105 +167,139 @@ def hi_request(consent_id=CONSENT_ID):
                         "dhPublicKey": {"expiry": "2126-01-01T00:00:00.000Z", "parameters": "p", "keyValue": "k"}}}}
 
 
-@pytest.fixture
-def held(app):
-    app.config["HIP_CONSENT_HOLD_SECONDS"] = 60
-    app.config["HIP_PAIR_DELAY_SECONDS"] = 3
+def notice_ack(consent_id=CONSENT_ID):
+    return {"consentId": consent_id, "requestId": "r-c", "hipId": HIP_ID}
 
 
 @pytest.fixture
-def timers(monkeypatch):
-    """The timer thread of the pairing, collected so the test runs it when it wants."""
+def ack_wait(app, monkeypatch):
+    """Turn the wait on; no real sleeping."""
+    app.config["HIP_CONSENT_ACK_WAIT_SECONDS"] = 25
+    app.config["HIP_KEYS_SETTLE_SECONDS"] = 4
+    slept = []
+    monkeypatch.setattr(hip_pairing.time, "sleep", lambda s: slept.append(s))
+    return slept
+
+
+def test_the_ack_is_sent_to_abdm_first_and_i_medicus_is_answered_when_the_request_was_handled(
+        ack_wait, client, jwks, http, hip, auth, monkeypatch):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    seen = {}
+
+    def request_arrives(seconds):
+        ack_wait.append(seconds)
+        if "abdm_acked" not in seen:
+            seen["abdm_acked"] = len(abdm_calls(w, "consent"))      # ABDM already has the acknowledgement
+            w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
+            w.imedicus_answers("health-information/on-request", {"transactionId": TXN, "response": {"requestId": "r-h"}})
+
+    monkeypatch.setattr(hip_pairing.time, "sleep", request_arrives)
+    res = w.imedicus_answers("consent/on-notify", notice_ack())
+    assert res.status_code == 201 and seen["abdm_acked"] == 1
+    assert 4 in ack_wait                                        # and the keys got their moment
+
+
+def test_the_wait_ends_when_no_request_comes_and_i_medicus_is_answered_anyway(ack_wait, client, jwks, http, hip, auth,
+                                                                              monkeypatch):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    ticks = iter(range(0, 1000, 10))
+    monkeypatch.setattr(hip_pairing.time, "monotonic", lambda: next(ticks))
+    res = w.imedicus_answers("consent/on-notify", notice_ack())
+    assert res.status_code == 201 and len(abdm_calls(w, "consent")) == 1
+
+
+def test_a_consent_that_is_not_granted_is_answered_at_once(ack_wait, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification("REVOKED"), "r-c")
+    assert w.imedicus_answers("consent/on-notify", notice_ack()).status_code == 201
+    assert ack_wait == []
+
+
+def test_a_repeated_ack_does_not_wait_again(ack_wait, client, jwks, http, hip, auth, monkeypatch):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    monkeypatch.setattr(hip_pairing, "wait_for_request", lambda consent_id: calls.append(consent_id))
+    calls = []
+    w.imedicus_answers("consent/on-notify", notice_ack())
+    w.imedicus_answers("consent/on-notify", notice_ack())
+    assert calls == [CONSENT_ID]                                # the second answer was "already_sent"
+
+
+def test_with_the_wait_off_the_ack_is_answered_at_once(app, client, jwks, http, hip, auth, monkeypatch):
+    app.config["HIP_CONSENT_ACK_WAIT_SECONDS"] = 0
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    monkeypatch.setattr(hip_pairing.time, "sleep", lambda s: pytest.fail("must not wait"))
+    assert w.imedicus_answers("consent/on-notify", notice_ack()).status_code == 201
+
+
+# ---- the request is not left behind the worker that is busy with its notice -------------------------------------------
+
+@pytest.fixture
+def threads(monkeypatch):
     started = []
     monkeypatch.setattr(hip_pairing, "_spawn", lambda delay, fn, *args: started.append((delay, fn, args)))
     return started
 
 
-def notice_job():
-    return next(j for j in OutboxJob.query.all()
-                if CallbackEvent.query.get(j.callback_event_id).path.endswith("consent/request/hip/notify"))
-
-
-def request_job():
-    return next(j for j in OutboxJob.query.all()
-                if CallbackEvent.query.get(j.callback_event_id).path.endswith("hip/health-information/request"))
-
-
-def test_a_granted_notice_waits_for_the_request_of_its_consent(held, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
-    job = notice_job()
-    assert job.hold_consent_id == CONSENT_ID
-    assert as_utc(job.next_attempt_at) > utcnow() + timedelta(seconds=30)
-    assert worker.run(once=True) == 0                         # nothing is due: nothing reaches i-medicus yet
-    assert CallbackEvent.query.one().status == "received"
-
-
-def test_the_request_releases_the_notice_and_waits_to_follow_it(held, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
-    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
-    assert as_utc(notice_job().next_attempt_at) <= utcnow()  # due now
-    request = request_job()
-    assert request.hold_consent_id == CONSENT_ID and as_utc(request.next_attempt_at) > utcnow() + timedelta(seconds=30)
-
-
-def test_the_notice_is_delivered_first_and_the_request_follows_from_a_timer(held, timers, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
-    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
-    http.add("POST", f"{CALLBACK_URL}/api/v3/consent/request/hip/notify", json={"status": "success"})
-    http.add("POST", f"{CALLBACK_URL}/api/v3/hip/health-information/request", json={"status": "success"})
-
-    assert worker.run(once=True) == 1                         # the worker delivers the notice (i-medicus sleeps 10 s in it)
-    urls = [c.request.url for c in http.calls if c.request.url.startswith(CALLBACK_URL)]
-    assert urls == [f"{CALLBACK_URL}/api/v3/consent/request/hip/notify"]
-    (delay, fn, args), = timers                               # the request was taken for the timer, 3 seconds later
-    assert delay == 3 and request_job().status == oj.PROCESSING
-
-    fn(*args)                                                 # the timer fires inside i-medicus' sleep
-    urls = [c.request.url for c in http.calls if c.request.url.startswith(CALLBACK_URL)]
-    assert urls[-1] == f"{CALLBACK_URL}/api/v3/hip/health-information/request" and len(urls) == 2
-    assert request_job().status == oj.DONE
-    assert {e.status for e in CallbackEvent.query.all()} == {"delivered"}
-
-
-def test_a_notice_without_a_request_is_delivered_when_the_hold_ends(held, timers, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
-    job = notice_job()
-    job.next_attempt_at = utcnow() - timedelta(seconds=1)     # the hold has run out
+def _in_flight_notice():
+    """The worker is delivering the notice: its job is `processing`."""
     from src.app.extensions import db
+    job = next(j for j in OutboxJob.query.all()
+               if CallbackEvent.query.get(j.callback_event_id).path.endswith("consent/request/hip/notify"))
+    job.status = oj.PROCESSING
     db.session.commit()
-    http.add("POST", f"{CALLBACK_URL}/api/v3/consent/request/hip/notify", json={"status": "success"})
-    assert worker.run(once=True) == 1 and timers == []
-    assert CallbackEvent.query.one().status == "delivered"
+    return job
 
 
-def test_a_notice_that_is_not_a_grant_is_not_held(held, client, jwks, http, hip, auth):
+def test_a_request_is_delivered_by_a_thread_while_its_notice_is_being_delivered(threads, client, jwks, http, hip, auth):
     w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification("REVOKED"), "r-c")
-    job = notice_job()
-    assert job.hold_consent_id is None and as_utc(job.next_attempt_at) <= utcnow()
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    assert _in_flight_notice().hold_consent_id == CONSENT_ID
+    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
+    (delay, fn, args), = threads
+    assert delay > 0
+    http.add("POST", f"{CALLBACK_URL}/api/v3/hip/health-information/request", json={"status": "success"})
+    fn(*args)                                                  # the thread, after the receiver committed
+    urls = [c.request.url for c in http.calls if c.request.url.startswith(CALLBACK_URL)]
+    assert urls == [f"{CALLBACK_URL}/api/v3/hip/health-information/request"]
+    event = CallbackEvent.query.filter_by(request_id="r-h").one()
+    assert event.status == "delivered"
 
 
-def test_a_request_with_no_notice_waiting_is_not_held(held, client, jwks, http, hip, auth):
+def test_a_request_without_a_notice_in_flight_goes_through_the_worker(threads, client, jwks, http, hip, auth):
     w = World(client, jwks, auth)
     w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
-    job = request_job()
-    assert job.hold_consent_id is None and as_utc(job.next_attempt_at) <= utcnow()
+    assert threads == []
+    assert OutboxJob.query.one().status == oj.PENDING
 
 
-def test_a_request_for_another_consent_does_not_release_the_notice(held, client, jwks, http, hip, auth):
+def test_a_request_of_another_consent_is_not_taken_by_a_thread(threads, client, jwks, http, hip, auth):
     w = World(client, jwks, auth)
     w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    _in_flight_notice()
     w.abdm_calls_gateway("v3/hip/health-information/request", hi_request("another-consent"), "r-h")
-    assert as_utc(notice_job().next_attempt_at) > utcnow() + timedelta(seconds=30)
+    assert threads == []
 
 
-def test_with_the_hold_off_everything_is_delivered_at_once(app, client, jwks, http, hip, auth):
-    app.config["HIP_CONSENT_HOLD_SECONDS"] = 0
+def test_the_worker_and_the_thread_never_deliver_the_same_request_twice(threads, client, jwks, http, hip, auth):
     w = World(client, jwks, auth)
     w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
-    job = notice_job()
-    assert job.hold_consent_id is None and as_utc(job.next_attempt_at) <= utcnow()
+    _in_flight_notice()
+    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
+    (delay, fn, args), = threads
+    http.add("POST", f"{CALLBACK_URL}/api/v3/hip/health-information/request", json={"status": "success"})
+    assert worker.run(once=True) == 1                           # the worker was free first
+    fn(*args)                                                   # the thread finds the job already taken
+    urls = [c.request.url for c in http.calls if c.request.url == f"{CALLBACK_URL}/api/v3/hip/health-information/request"]
+    assert len(urls) == 1
+
+
+def test_rubbish_bodies_are_stored_and_queued_without_a_crash(threads, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", {"notification": "oops"}, "r-1")
+    w.abdm_calls_gateway("v3/hip/health-information/request", {"hiRequest": ["x"]}, "r-2")
+    w.abdm_calls_gateway("v3/hip/health-information/request", {"hiRequest": {"consent": "x"}}, "r-3")
+    assert OutboxJob.query.count() == 3 and threads == []

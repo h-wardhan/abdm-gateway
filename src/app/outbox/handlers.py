@@ -36,9 +36,6 @@ def forward_callback(job):
     except registry.UnsafeUrlError as exc:
         return Fail(exc.message)
 
-    from src.app.services import hip_pairing  # late: the service imports the engine
-    hip_pairing.claim_requests_of(job)
-
     url, headers, body = forwarder.build_request(event, registration)
     try:
         # No redirects: a redirect could send the callback somewhere that was never checked

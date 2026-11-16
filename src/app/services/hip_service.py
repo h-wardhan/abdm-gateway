@@ -21,7 +21,7 @@ from src.app.errors import AppError, NotFoundError, ValidationError
 from src.app.extensions import db
 from src.app.models import CallbackEvent, HipReply
 from src.app.models import hip_state
-from src.app.services import hip_consent_service, hip_transfer_service, link_token_service
+from src.app.services import hip_consent_service, hip_pairing, hip_transfer_service, link_token_service
 
 
 # ---- helpers ------------------------------------------------------------------------------------------------
@@ -232,7 +232,11 @@ def consent_on_notify(client, data):
     consent_id = str(v.require(ack.get("consentId") or v.pick(data, "consentId"), "consentId"))
     status = str(ack.get("status") or "OK").upper()
     body = {"acknowledgement": {"status": status, "consentId": consent_id}, "response": {"requestId": request_id}}
-    return _answer(client, event, "consent_on_notify", abdm.CONSENT_ON_NOTIFY, body, "hip/consent/on-notify")
+    result = _answer(client, event, "consent_on_notify", abdm.CONSENT_ON_NOTIFY, body, "hip/consent/on-notify")
+    if result.get("status") != "already_sent":
+        # ABDM now sends the health-information request: answer i-medicus only when it has been handled (hip_pairing)
+        hip_pairing.wait_for_request(consent_id)
+    return result
 
 
 def hi_on_request(client, data):

@@ -234,18 +234,20 @@ ordering; the gateway absorbs them, so i-medicus is not changed.
   once more (it saves the token) and the answer says `linkToken: already issued`; one already requested in the last
   `HIP_LINK_TOKEN_PENDING_SECONDS` (60) is not requested twice (`linkToken: requested`); a request ABDM refused is forgotten.
 
-**Consent notice and health-information request together** (`services/hip_pairing.py`, `outbox_jobs.hold_consent_id`).
-On `consent/request/hip/notify` i-medicus stores the consent id, sleeps 10 seconds, then builds, encrypts and pushes the
-records with the keys of the health-information request. When that request comes later (the HIU fetches the consent first,
-25-30 seconds on the sandbox) there are no keys: `fhir/encrypt` is called with an empty private key (400) and nothing is
-pushed. So a **GRANTED** notice is held (at most `HIP_CONSENT_HOLD_SECONDS`, 240; 0 turns the hold off) until the request of
-the same consent arrives; then the notice is released and the request is delivered `HIP_PAIR_DELAY_SECONDS` (8) after it, by a
-timer thread of the worker (the worker itself is busy with the notice during i-medicus' sleep). ABDM gives the HIP the request 105-115 seconds after the notice, so 90 seconds was too short (the notice left just before it
-arrived and i-medicus built the records with the transaction of the previous round). A grant that gets no request
-is delivered when the hold ends. Revoked and expired notices are not held. The 8 seconds come from i-medicus' notice handler:
-it sleeps 5 s, then saves the consent id on its rows, acknowledges, sleeps 10 s and builds the records; the request must
-arrive after the consent id is saved and before the records are built (3 seconds was too early: the request found no row
-and was ignored; ABDM's retry of it came after the records were built, with a stale transaction id).
+**Consent acknowledgement waits for the health-information request** (`services/hip_pairing.py`, `outbox_jobs.hold_consent_id`).
+On `consent/request/hip/notify` i-medicus sleeps 5 s, saves the consent id on its rows, acknowledges, sleeps 10 s, then builds
+the records with the transaction id and keys it holds at that moment. ABDM sends the HIP the health-information request (which
+carries the transaction id and the HIU key) only **after** the acknowledgement, about 14 s later (ack 09:26:43 / request
+handled 09:26:57; 10:02:54 / 10:03:08; 10:50:09 / 10:50:23). So the request is handled about 4 s after the records were built:
+they go out under the transaction of the previous round (ABDM: "Invalid Consent artefact id" on the status notification, the
+data lands under the old consent) or without keys (`fhir/encrypt` 400). An earlier attempt held the notice until the request
+arrived; that cannot work, because the request only comes after the notice's acknowledgement.
+
+What the gateway does now: it sends the acknowledgement to ABDM at once and answers i-medicus' `hip/consent/on-notify` call
+only when the request of that consent has been acknowledged and its keys fetched (at most `HIP_CONSENT_ACK_WAIT_SECONDS`, 25, then
+`HIP_KEYS_SETTLE_SECONDS`, 4; 0 turns it off). i-medicus' 10 s sleep then starts with everything in place. The worker is busy
+with the notice for that time, so the request is delivered by a thread of its own as soon as it arrives. Only GRANTED consents
+and first answers wait; a repeated answer or a revoked consent is answered at once.
 
 **Consent range** (`hiu_service._range_end`). i-medicus' consent form takes a date and sends `toDate` as midnight
 (`2026-11-16T00:00:00.000Z`). ABDM then leaves out the care contexts of that day: on 16 Nov 2026 the patient's app listed only old

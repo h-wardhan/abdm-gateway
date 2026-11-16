@@ -1,7 +1,8 @@
-# i-medicus: moving from VCDoctor to abdm-gateway (M1)
+# i-medicus: moving from VCDoctor to abdm-gateway (M1, M2, M3)
 
-i-medicus used to call the VCDoctor gateway (`abdmprod.vcdoctor.com`, `api/v2/ABDMVC/*`). Its M1
-calls now go to abdm-gateway.
+i-medicus used to call the VCDoctor gateway (`abdmprod.vcdoctor.com`, `api/v2/ABDMVC/*`). Its M1, M2 (HIP) and M3 (HIU)
+calls now go to abdm-gateway. Rule: i-medicus gets **path changes only**; ABDM, FHIR and crypto logic lives on the
+gateway. The one exception is the video-call prescription flow (see "Legacy video-call flow").
 
 The gateway keeps the request bodies and response shapes i-medicus already uses, so only the
 **paths** changed. They now live in one place: `config/abdm.php` → `endpoints`.
@@ -15,9 +16,7 @@ The gateway keeps the request bodies and response shapes i-medicus already uses,
 3. `ABDMService::updateMobileNumberVerify`: the `authResult` check is now case-insensitive.
    ABDM returns `failed`, and the old code only matched `Failed`.
 
-Not changed:
-- M2/M3 paths (care-context linking, consent, Fidelius, HIP QR, `WebhookTrait`). These come in a later phase.
-- The legacy `ABDM/*` paths in `MobileAbdmService`.
+Later phases moved the M2 and M3 paths too (sections below). Still on their old paths: see "Not on the gateway".
 
 ## Path mapping
 
@@ -117,13 +116,218 @@ request whose consent is unknown, revoked, expired, or whose date range is outsi
 In i-medicus the six callback handlers are dispatched from `ABHAController::webhook`; `CreateSession` now uses the
 gateway session.
 
+## M2 FHIR: health records as ABDM document Bundles (Days 12-13)
+
+i-medicus builds the record payload it always built (`WebhookTrait::FHIRApi` and the `*Record` methods) and posts it to
+the gateway, which answers the **Bundle itself at the top level** (no `data` envelope). The Bundle follows the NRCeS ABDM
+FHIR R4 IG 6.5.0; the Organization is the client's HIP. A payload that cannot become a valid record is HTTP 422
+`INVALID_RECORD` with the field in `details`.
+
+| `config('abdm.endpoints.*')` | Gateway path | Record | Payload keys of its own |
+|---|---|---|---|
+| `fhir_prescription` | `POST api/v1/fhir/prescription` | PrescriptionRecord | `medications[]`, `binaryDocument` |
+| `fhir_op_consultation` | `POST api/v1/fhir/op-consultation` | OPConsultRecord | chief complaints, vitals, allergies, procedures, ... |
+| `fhir_diagnostic_report` | `POST api/v1/fhir/diagnostic-report` | DiagnosticReportRecord | `diagnosticReports[]`, `documentReference` |
+| `fhir_discharge_summary` | `POST api/v1/fhir/discharge-summary` | DischargeSummaryRecord | as OP consult + diagnoses, care plan |
+| `fhir_immunization` | `POST api/v1/fhir/immunization` | ImmunizationRecord | `immunizations[]`, `documentReference` |
+| `fhir_health_document` | `POST api/v1/fhir/health-document` | HealthDocumentRecord | `documentReference[]` |
+| `fhir_wellness` | `POST api/v1/fhir/wellness` | WellnessRecord | vitals, measurements, ... |
+| `fhir_invoice` | `POST api/v1/fhir/invoice` | InvoiceRecord | `lineItems[]` |
+
+Common blocks in every payload: `patient` (`name`, `healthId` = ABHA address, `gender`, `birthDate`, `phone`),
+`practitioner` (`name`, `licenseNumber`), `organization` (`name`; the facility id is the client's HIP), `encounter`
+(`encounterId`, `classCode`). `POST api/v1/fhir/validate` checks a Bundle someone else made. The structural check needs
+`fhir.resources`; `FHIR_STRUCTURAL_CHECK=false` turns it off for a development machine that cannot load it (always on
+in production). Tests: `tests/fhir/`, `tests/contract/test_fhir_routes.py`.
+
+## M2 data transfer and M3 HIU: keys, encryption, push, status, consent requests (Days 14-15)
+
+i-medicus is both a HIP (it sends records) and a HIU (it asks other clinics and receives the push on its own
+`/api/abdm-webhook`), so both roles moved. Same rule: i-medicus keeps its bodies, only the paths changed.
+
+**HIP: after the health-information request is acknowledged**
+
+| Old VCDoctor path | `config('abdm.endpoints.*')` | Gateway path | What the gateway adds |
+|---|---|---|---|
+| `FideliusEncryptionDecryption/GenerateKeys/keys` (GET) | `fhir_keys` | `GET api/v1/fhir/keys` | `{privateKey, publicKey, nonce}`; the public key is the raw 88-character point (i-medicus' key columns are varchar(255)); not stored by the gateway |
+| `FideliusEncryptionDecryption/Encrypt/encrypt` | `fhir_encrypt` | `POST api/v1/fhir/encrypt` | `{encryptedData, keyToShare}`; refuses a `senderPublicKey` that is not the private key's |
+| `ABDMVC/SendNotification/calling-data-push-url` | `hip_hi_push` | `POST api/v1/hip/health-information/push` | see below |
+| `ABDMVC/SendNotificatin/data-flow-notification-request` | `hip_hi_notify` | `POST api/v1/hip/health-information/notify` | see below |
+| (new) | - | `GET api/v1/hip/transfers/<transactionId>` | state of a transfer: status, care contexts, attempts, last error |
+
+`hi_on_request` (the acknowledgement i-medicus already sends) records a **transfer** (`hip_transfers`, migration `0005`)
+with the push URL, the consent and the HIU's key expiry **as ABDM gave them**. Status: `ACKNOWLEDGED -> PUSH_QUEUED ->
+PUSHED -> NOTIFIED | FAILED`.
+
+- **push.** Pushes only to the URL of the acknowledged request (a different `pushUrl`/`dataPushUrl` is 400
+  `PUSH_URL_MISMATCH`), https only and never a private address (`PUSH_ALLOW_HTTP` / `PUSH_ALLOW_PRIVATE_URLS` for
+  staging and local runs). It re-checks the consent first (403 `CONSENT_INVALID`: revoked, expired) and that every
+  `careContextReference` is covered (403 `CARE_CONTEXT_NOT_CONSENTED`), then the key material. It adds
+  `pageNumber`/`pageCount`, replaces i-medicus' placeholder `checksum` with the MD5 of the content, sends only ABDM's
+  fields and no token, and follows no redirect. HIU unreachable / 5xx / 429: **HTTP 202 `queued`**, the worker retries
+  with backoff (`OUTBOX_*`). HIU answers 4xx: **HTTP 502 `HIU_REJECTED_PUSH`** (with what the HIU said). In both
+  permanent cases the gateway tells ABDM `FAILED` itself. A repeated push is `already_sent`.
+- **notify.** `TRANSFERRED` / `FAILED`. Every care context pushed is reported (i-medicus reports only the first), the
+  notifier is the facility, not what the body says. `TRANSFERRED` while the push is still queued is held (HTTP 202) and
+  sent when the push lands; before any push it is 400 `NOT_PUSHED`. ABDM down: queued and retried. Repeats are
+  `already_sent`. ABDM answers `ABDM-1080 Invalid Consent artefact id` to a status for a consent that is revoked or a
+  transaction that has expired; the gateway keeps that in the transfer's `lastError`.
+
+**HIU**
+
+| Old VCDoctor path | `config('abdm.endpoints.*')` | Gateway path | ABDM call |
+|---|---|---|---|
+| `ABDMVC/InitiateConsentRequest/consent-init-request-by-hiu` | `hiu_consent_init` | `POST api/v1/hiu/consent/init` (202) | `consent/v3/request/init`, `REQUEST-ID` = the `requestId` i-medicus keeps |
+| `ABDMVC/NotifyConsentHiuRequest/consent-request-hui-on-notify` | `hiu_consent_on_notify` | `POST api/v1/hiu/consent/on-notify` | `consent/v3/request/hiu/on-notify`, matched by `response.requestId`, sent once |
+| `ABDMVC/FetchConsent/fetch-consent-detail` | `hiu_consent_fetch` | `POST api/v1/hiu/consent/fetch` | `consent/v3/fetch` |
+| (new, i-medicus does not call it yet) | - | `POST api/v1/hiu/consent/status` | `consent/v3/request/status` for `consentRequestId`; the answer arrives as the `hiu/consent/request/on-status` callback; queued if ABDM is down |
+| `ABDMVC/SendHealthInformationRequest/health-information-request` | `hiu_hi_request` | `POST api/v1/hiu/health-information/request` (202) | `data-flow/v3/health-information/request`, with our key and `dataPushUrl` |
+| `FideliusEncryptionDecryption/Decrypt/decrypt` | `fhir_decrypt` | `POST api/v1/fhir/decrypt` | answers a JSON **string** holding `{"decryptedData": "<plain text>"}` (i-medicus decodes twice and keeps the object in `consent_health_data.fhir_json`; its viewer reads `decryptedData`) |
+
+The facility is the client's own `hipId` (the id is the same in both roles) and goes to ABDM as `X-HIU-ID`. Consent init
+and the health-information request create things at ABDM and are never queued; the on-notify answer and the fetch are.
+HIU callbacks (`api/v3/hiu/...`) are routed by `X-HIU-ID`, or by the `hiu` id in the body. The pushed data goes
+**straight from the HIP to the HIU's `dataPushUrl`**, never through ABDM or the gateway; i-medicus' webhook keeps
+receiving it.
+
+**Changes in i-medicus beyond a path.** `GenerateKeys` and `Encrypt` now send the credentials headers (they sent none),
+and `config('abdm.encryption_base_url')` is the gateway's URL (`ABDM_DATA_ENCRYPTION_URL` is no longer read).
+The sender private key is still kept in i-medicus' database, as before.
+
+## M3 HIU: consent tracking and expiry block (Days 16-19)
+
+The gateway keeps what ABDM's callbacks say about the consents the facility asked for (`hiu_consents`, `hiu_transfers`,
+migration 0007), so that rules do not depend on i-medicus remembering them. i-medicus' bodies are unchanged; the new
+behaviour is on routes it already calls plus two read routes.
+
+| Callback (stored when it arrives) | Kept |
+|---|---|
+| `hiu/consent/request/notify` | status of the request (GRANTED, DENIED, REVOKED, EXPIRED) and the artefact ids |
+| `hiu/consent/on-fetch` | the artefact: granted date range, hi types, `dataEraseAt`, the HIP |
+| `hiu/health-information/on-request` | the `transactionId` of our request (matched by its REQUEST-ID) |
+
+- `POST /api/v1/hiu/health-information/request` refuses a consent the gateway knows to be denied, revoked, expired
+  (`dataEraseAt` passed) or not covering `fromDate`/`toDate`: 403 `CONSENT_INVALID` with `details.reason`
+  (`REVOKED`, `DENIED`, `EXPIRED`, `OUT_OF_RANGE`); nothing is sent to ABDM and no transaction is opened. A consent the
+  gateway never heard of (made before this was deployed) is let through; `HIU_REQUIRE_KNOWN_CONSENT=true` refuses those too.
+- `GET /api/v1/hiu/consent/{consentId}`: status, `usable` / `reason`, date range, erase date and the requests made under
+  it (`transactionId`, status). A client sees only its own consents (404 `CONSENT_NOT_FOUND`).
+- `POST /api/v1/fhir/decrypt` accepts an optional `transactionId` or `consentId`; when that consent has ended the records
+  are not opened (403 `CONSENT_INVALID`). i-medicus does not send either today.
+
+What stays in i-medicus: the received records (`consent_health_data`) and the push receiver (the HIP pushes straight to
+`DATA_PUSH_URL`, not through the gateway). Erasing records after a consent ends is therefore not done by the gateway, and
+it is out of scope by decision. The decrypt guard works only once i-medicus sends the `transactionId` with the push
+(not done).
+
+## M2 on the sandbox with the staging i-medicus: what the gateway does so a user needs no manual step (16 Nov 2026)
+
+Found by running the whole HIP flow from the i-medicus screens against the ABDM sandbox. Two of the problems are i-medicus'
+ordering; the gateway absorbs them, so i-medicus is not changed.
+
+**Link token** (`services/link_token_service.py`, table `hip_link_tokens`). ABDM issues the token asynchronously (callback
+`hip/token/on-generate-token`). i-medicus asks for it and links at once (ABDM: "Invalid X Auth token"), and asks again
+(ABDM: "Duplicate Link token request"). The gateway keeps the token from the callback and:
+- a `link/care-context` or `link/notify` call uses the token ABDM issued, waits up to `HIP_LINK_TOKEN_WAIT_SECONDS` (10) for one
+  that is on its way, and falls back to the client's token when there is none;
+- `link-token` for a patient whose token exists is not sent to ABDM again: the stored callback is delivered to i-medicus
+  once more (it saves the token) and the answer says `linkToken: already issued`; one already requested in the last
+  `HIP_LINK_TOKEN_PENDING_SECONDS` (60) is not requested twice (`linkToken: requested`); a request ABDM refused is forgotten.
+
+**Consent notice and health-information request together** (`services/hip_pairing.py`, `outbox_jobs.hold_consent_id`).
+On `consent/request/hip/notify` i-medicus stores the consent id, sleeps 10 seconds, then builds, encrypts and pushes the
+records with the keys of the health-information request. When that request comes later (the HIU fetches the consent first,
+25-30 seconds on the sandbox) there are no keys: `fhir/encrypt` is called with an empty private key (400) and nothing is
+pushed. So a **GRANTED** notice is held (at most `HIP_CONSENT_HOLD_SECONDS`, 90; 0 turns the hold off) until the request of
+the same consent arrives; then the notice is released and the request is delivered `HIP_PAIR_DELAY_SECONDS` (3) after it, by a
+timer thread of the worker (the worker itself is busy with the notice during i-medicus' sleep). A grant that gets no request
+is delivered when the hold ends. Revoked and expired notices are not held.
+
+Also: the description of a FAILED transfer notification is now letters, digits, spaces and `. _ -` only (ABDM answered
+"Invalid description" to the HIU's JSON error copied in).
+
+Still in i-medicus data, not fixable on the gateway: several `abha_patients` rows for one ABHA address (the callback saves the
+token on the first, linking uses the latest), a patient's `dob` saved as today's date (ABDM-1207, "details do not match
+Aadhaar"), and an appointment without a payment (the Invoice record has no lines: 422 `INVALID_RECORD`).
+
+## Legacy video-call flow (`ABDMService::sendPrescription`, `sendWellnessRecord`, `acknowledgeConsent`, `fetchConsent`)
+
+The v1 prescription flow of a video call used the old `ABDM/*` and `api/v1/ABDMVC/ConvertPrescription` paths. In
+i-medicus **only the path (and the credentials headers, which the gateway needs on every call) changed; no body and no
+flow**. The gateway handles what the old bodies lack or get wrong:
+
+| Old path | `config('abdm.endpoints.*')` | Gateway path |
+|---|---|---|
+| `api/v1/ABDMVC/ConvertPrescription` | `fhir_legacy_prescription` | `POST api/v1/fhir/legacy-prescription` |
+| `api/v2/FideliusEncryptionDecryption/GenerateKeys/keys` (a POST that actually encrypted) | `fhir_encrypt` | `POST api/v1/fhir/encrypt` |
+| `ABDM/calling-data-push-url` | `hip_hi_push` | `POST api/v1/hip/health-information/push` |
+| `ABDM/data-flow-notification-request` | `hip_hi_notify` | `POST api/v1/hip/health-information/notify` |
+| `ABDM/consent-init-request-by-hiu` (the on-notify acknowledgement) | `hiu_consent_on_notify` | `POST api/v1/hiu/consent/on-notify` |
+| `ABDM/fetch-consent-detail` | `hiu_consent_fetch` | `POST api/v1/hiu/consent/fetch` |
+
+- **The FHIR body.** The old converter took only `prescriptionId`, `date`, `patient{id, name}`, `doctor{id, name}` and
+  `medicines[{name, dosage, frequency, duration, instructions}]`. `fhir/legacy-prescription` builds the standard
+  Prescription Bundle from it. The body has no ABHA address, licence number or clinic name, so the patient's and the
+  doctor's ids stand in for the identifier values (an optional `healthId` / `licenseNumber` in the body wins) and the
+  Organization is the client. That Bundle is valid, but its Patient identifier is an i-medicus id, not an ABHA address.
+- **The key material of the push.** The legacy bodies send the *receiver's* nonce (and in the wellness variant the
+  receiver's own key as `keyValue`), which the HIU cannot decrypt with. The gateway remembers, per transfer, the sender
+  key and nonce of the Encrypt call made for that HIU key (`hip_transfers.sender_public_key` / `sender_nonce`, migration
+  `0006`) and puts them into the push when the body carries others (a warning is logged). A push for a key that was
+  never used with the Encrypt route is sent as given.
+- The placeholder `checksum` is replaced by the real one, `dataPushUrl` is accepted as well as `pushUrl`, and the
+  notifier is always the facility.
+
+`sendWellnessRecord` still converts a *prescription* (it did before as well). Tests:
+`tests/contract/test_legacy_video_call.py`.
+
+## Not on the gateway
+
+Checked by searching `app/`, `config/`, `routes/` and `resources/` of i-medicus for every HTTP call to ABDM or VCDoctor.
+
+| Where | What | Why it is left |
+|---|---|---|
+| `ABDMService::getSession` (`ABDM/get-session`) | old session call | no caller anywhere (dead code) |
+| `ABDMService` `GetResponseUrl` (`ABDMVC/GetResponseUrl/<id>`) | look up ABDM's answer by request id | its only caller is commented out (dead code) |
+| `ProviderApiController::abhaSission`, route `GET api/abhaSission` | calls ABDM's v0.5 sessions API directly with `SESSION_CLIENT_ID/SECRET` from `global_constants.php` | no caller in this repository; a mobile app might use the route, so it is not touched |
+| `AdminAjaxdataController::getAPI`, route `GET /getAPI` | debug call to ABDM v0.5 sessions and the v2 `generateOtp` | not called by any view or script. It carries the sandbox client id and secret in the code, and the route is not behind a login: **rotate that secret and remove the route** |
+| commented-out old calls in `ABDMService`, `WebhookTrait`, `MobileAbdmService` | | comments only |
+
+## Verified on the ABDM sandbox (12 Nov 2026)
+
+Two facilities on one bridge (HIP `IN0810041408` "cradle hospital", HIU `IN0810041412` "Shri brij fracture").
+- All 8 record types linked, pushed and notified (`NOTIFIED`) twice: to ABDM's PHR app as HIU, and to i-medicus as HIU
+  (one consent per type; all 8 decrypted into `consent_health_data` and shown in the i-medicus viewer).
+- **Revoked consent:** the patient revoked a granted consent in the ABHA app; the push was refused with 403
+  `CONSENT_INVALID` ("Consent is REVOKED"), the transfer became `FAILED` and ABDM was told (it answers `ABDM-1080`).
+- Expired consent, a HIU that rejects the push, a HIU that is down and duplicate callbacks/pushes are covered by the
+  automated tests (`tests/contract/test_m2_transfer.py`); not yet run on the sandbox: expired consent, HIU reject.
+
+ABDM sandbox behaviour worth knowing: a future `toDate` is refused (`ABDM-9999`); a date-only `toDate` leaves out care
+contexts linked the same day; a PHR "Pull Records" makes one transaction per care context and the transaction expires
+within minutes, so push at once.
+
+**Findings in i-medicus (reported, not changed):** the patient-list Consent / Link Token buttons send no
+`appointment_id` (needed by `hipLinking`/`generateToken`); the consent modal's type select is empty (Choices is
+initialised twice) and its dates are date-only; `onConsentFetch` sends `expiryDate`/`fromDate`/`toDate` as date-only
+midnight, so a same-day expiry is "not in the future" and the health-information request fails
+(`WebhookTrait.php:3571-3578`); the link-token callback is saved on the oldest `abha_patients` row of an ABHA number,
+so a patient registered at two clinics gets the token on the wrong row; the consent-notify handler sleeps 10 s and
+pushes only the last care context with `hipKeys[0]`, so it races the health-information request.
+
+**Verification.** `pytest tests` (1009 pass), `scripts/e2e_transfer_local.py` (real processes over HTTP against the mock
+ABDM) and i-medicus' own PHP calling keys / encrypt / decrypt / the legacy payload builder.
+
 ## Environment (`i-medicus_web/src/.env`)
 ```
 ABDM_BASE_URL=https://abdm-gateway.example.com/   # gateway URL (local dev: http://localhost:5000/)
 ABDM_CLIENT_ID=<from: flask clients create --name "i-medicus" --hip-id IN0110005723_240>
 ABDM_CLIENT_SECRET=<shown once by the same command>
-ABDM_CLINIC_ID=IN0110005723_240               # unchanged (HIP id, used from M2 onwards)
+ABDM_CLINIC_ID=IN0110005723_240               # unchanged (the facility id; HIU calls read it directly)
 ```
+- HIP calls take the facility id from `clinic_admin.hfr_id` first (`CustomHelper::clinicAdminDetails`), the HIU calls
+  (`consentInit`, `onConsentFetch`, ...) read `ABDM_CLINIC_ID`. `clinic_admin.hfr_id` is varchar(15).
+- `DATA_PUSH_URL` is the public https URL of i-medicus' `/api/abdm-webhook` (the HIU's data-push address).
 - `ABDM_CLIENT_ID` / `ABDM_CLIENT_SECRET` are now **issued by the gateway**. They are not NHA credentials.
 - The NHA credentials live only in the gateway's `.env` (`NHA_CLIENT_ID` / `NHA_CLIENT_SECRET`).
 - After changing `.env`, run `php artisan config:clear`.
@@ -149,4 +353,4 @@ ABDM_CLINIC_ID=IN0110005723_240               # unchanged (HIP id, used from M2 
   sent to ABDM and the keys i-medicus reads.
 - PHP smoke test, run with i-medicus's own Guzzle and `AbdmErrorTranslator` against the gateway and
   `scripts/mock_abdm.py`: 33/33 checks passed, across all M1 flows, card/QR bytes and the error translations.
-- **Still to do:** an end-to-end run against the real ABDM sandbox once NHA sandbox credentials are available.
+- M1 has run against the ABDM sandbox; the M2 and M3 sandbox results are in "Verified on the ABDM sandbox".

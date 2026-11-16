@@ -94,13 +94,22 @@ POST /api/v1/share/on-share        Authorization: <access token>
 POST /api/v1/share/qr        Authorization: <access token>
 {"hipId": "IN0810041408", "callbackUrl": "<optional, accepted for i-medicus>", "counterId": "<optional>"}
 -> {"success": true, "type": "Success", "data": "data:image/png;base64,...", "code": "IN0810041408",
-    "payload": {"hipId": "...", "hipName": "..."}, "requestId": "..."}
+    "payload": {"hipId": "IN0810041408", "counterId": "1",
+                "url": "https://phrsbx.abdm.gov.in/share-profile?hip-id=IN0810041408&counter-id=1"},
+    "requestId": "..."}
 ```
 
 The body is the one i-medicus already sends and the answer keeps the shape its dashboard reads (`type`, `data` as
-`<img src>`). `payload` is the JSON the QR holds. Only your own registered clinics (`404 HIP_NOT_FOUND` otherwise).
-The payload layout (`hipId`, `hipName`, `counterId`) is built in `share_service.facility_qr`; check it against ABDM's
-Scan & Share spec in the sandbox.
+`<img src>`). Only your own registered clinics (`404 HIP_NOT_FOUND` otherwise).
+
+**The QR holds a URL, not JSON.** ABDM's format is `<PHR host>/share-profile?hip-id=<facility>&counter-id=<counter>`
+(the counter is 1 to 32 letters, digits, `.`, `_` or `-`; ABDM's docs call it optional, but the ABHA sandbox app answered
+"Invalid QR code" to a QR without it and accepted `1`, `desk1` and `12345`). i-medicus sends no counter, so
+`SHARE_QR_DEFAULT_COUNTER` (default `1`) is used. An earlier version put `{"hipId": ...}` in the QR and
+the ABHA sandbox app answered "Invalid QR code"; the URL form was checked by scanning it in that app on 13 Nov 2026.
+The host is `SHARE_QR_BASE_URL`: it defaults to `https://phrsbx.abdm.gov.in/share-profile` when `ABDM_ENV=sbx`; for
+production set the host ABDM gives you (until then the route answers `503 SHARE_QR_NOT_CONFIGURED`). The facility must be
+one that ABDM links to your client (a facility registered on your bridge).
 
 ## How the gateway finds the facility
 

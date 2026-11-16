@@ -17,11 +17,11 @@ from flask import request
 from src.app.abdm import hip as abdm
 from src.app.callbacks import registry
 from src.app.common import validators as v
-from src.app.errors import NotFoundError, ValidationError
+from src.app.errors import AppError, NotFoundError, ValidationError
 from src.app.extensions import db
 from src.app.models import CallbackEvent, HipReply
 from src.app.models import hip_state
-from src.app.services import hip_consent_service, hip_transfer_service
+from src.app.services import hip_consent_service, hip_transfer_service, link_token_service
 
 
 # ---- helpers ------------------------------------------------------------------------------------------------
@@ -87,12 +87,16 @@ def _hip_id(client, data):
     return registry.for_call(client, registry.validate_hip_id(hip_id)).hip_id
 
 
-def _link_token(data):
-    token = request.headers.get("X-Link-Token") or v.pick(data, "linkToken", "link_token")
-    if not token or not str(token).strip():
+def _link_token(data, hip_id, address):
+    """The token for a link call: the one ABDM issued for this patient (kept from its callback, waited for when it is on its
+    way), else the one the client sent."""
+    client_token = request.headers.get("X-Link-Token") or v.pick(data, "linkToken", "link_token")
+    client_token = str(client_token).strip() if client_token else None
+    token = link_token_service.token_for_call(hip_id, address, client_token)
+    if not token:
         raise ValidationError("link token is required (X-Link-Token header or linkToken)", code="MISSING_LINK_TOKEN",
                               details={"field": "linkToken"})
-    return str(token).strip()
+    return token
 
 
 def _now():
@@ -148,32 +152,45 @@ def generate_token(client, data):
         "gender": str(v.require(v.pick(data, "gender"), "gender")),
         "yearOfBirth": int(v.require(v.pick(data, "yearOfBirth"), "yearOfBirth")),
     }
-    abdm.generate_token(hip_id, body)
+    address = body["abhaAddress"]
+    issued = link_token_service.current(hip_id, address)
+    if issued is not None:  # ABDM already issued one: do not ask again ("Duplicate Link token request"), hand it over again
+        link_token_service.replay(issued)
+        return {"hipId": hip_id, "linkToken": "already issued"}
+    if link_token_service.is_on_its_way(hip_id, address):
+        return {"hipId": hip_id, "linkToken": "requested"}
+    link_token_service.note_requested(hip_id, address)
+    try:
+        abdm.generate_token(hip_id, body)
+    except AppError:
+        link_token_service.clear_requested(hip_id, address)
+        raise
     return {"hipId": hip_id}
 
 
 def link_care_context(client, data):
     """Single or several patients in one call; i-medicus sends them under `singlecarecontext`."""
     hip_id = _hip_id(client, data)
-    token = _link_token(data)
     source = data.get("singlecarecontext") or data.get("carecontext") or data
+    address = v.abha_address(v.pick(source, "abhaAddress"))
     body = {
         "abhaNumber": v.abha_number(v.pick(source, "abhaNumber", "ABHANumber")).replace("-", ""),
-        "abhaAddress": v.abha_address(v.pick(source, "abhaAddress")),
+        "abhaAddress": address,
         "patient": _patients(source),
     }
+    token = _link_token(data, hip_id, address)
     abdm.link_care_context(hip_id, token, body)
     return {"hipId": hip_id}
 
 
 def link_notify(client, data):
     hip_id = _hip_id(client, data)
-    token = _link_token(data)
     types = v.pick(data, "hiType", "hiTypes")
     types = [types] if isinstance(types, str) else types
     if not isinstance(types, list) or not types:
         raise ValidationError("hiType is required", details={"field": "hiType"})
     address = v.abha_address(v.pick(data, "abhaAddress"))
+    token = _link_token(data, hip_id, address)
     body = {"notification": {
         "patient": {"id": address},
         "careContext": {"patientReference": str(v.require(v.pick(data, "patientReference"), "patientReference")),

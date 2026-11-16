@@ -548,3 +548,16 @@ def test_http_and_private_push_urls_are_allowed_only_when_configured_for_local_r
     sender, encrypted = flow.encrypt()
     jwks.add(responses.POST, url, json={}, status=200)
     assert flow.push(flow.push_body(sender, encrypted)).status_code == 200
+
+
+def test_a_failure_description_has_no_symbols_abdm_refuses(flow):
+    """ABDM answers "Invalid description" to braces and quotes (the HIU's JSON error copied in): the text is cleaned."""
+    flow.acknowledged()
+    res = flow.notify(session="FAILED", responses_=[{
+        "careContextReference": "CC-1", "hiStatus": "ERRORED",
+        "description": 'HIU answered HTTP 400: {"code":"ABDM-9999","message":"Invalid Consent artefact id"}'}])
+    assert res.status_code == 200
+    (n,) = flow.abdm_notifications()
+    text = n["statusNotification"]["statusResponses"][0]["description"]
+    assert text == "HIU answered HTTP 400 code ABDM-9999 message Invalid Consent artefact id"
+    assert not set(text) & set('{}":;[]')

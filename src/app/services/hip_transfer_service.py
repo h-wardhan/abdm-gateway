@@ -14,6 +14,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import re
 from urllib.parse import urlsplit
 
 import requests
@@ -338,6 +339,13 @@ def run_push_job(job):
 
 # ---- the status notification --------------------------------------------------------------------------------------
 
+def _description(text, default):
+    """ABDM refuses a statusResponses description with braces, quotes or other symbols ("Invalid description", seen on the
+    sandbox when the HIU's JSON error was copied in): keep letters, digits, spaces and . _ - only."""
+    clean = " ".join(re.sub(r"[^A-Za-z0-9 ._-]", " ", str(text or "")).split())[:100]
+    return clean or default
+
+
 def _responses(transfer, sent, session_status, reason=None):
     """statusResponses for every care context of the transfer: what the client sent, completed with the ones it left
     out (i-medicus reports only the first), and ERRORED for all of them when the transfer failed."""
@@ -355,10 +363,11 @@ def _responses(transfer, sent, session_status, reason=None):
     for reference in references:
         item = by_ref.get(reference, {})
         if session_status == SESSION_FAILED:
-            status, text = HI_ERRORED, (reason or item.get("description") or "Data could not be pushed")[:200]
+            status = HI_ERRORED
+            text = _description(reason or item.get("description"), "Data could not be pushed")
         else:
             status = str(item.get("hiStatus") or HI_DELIVERED).upper()
-            text = item.get("description") or "Data Pushed"
+            text = _description(item.get("description"), "Data Pushed")
         out.append({"careContextReference": reference, "hiStatus": status, "description": text})
     return out
 

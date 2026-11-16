@@ -27,7 +27,7 @@ from src.app.extensions import db, limiter
 from src.app.models import CallbackEvent
 from src.app.models import callback_event as ce
 from src.app.models import outbox_job as oj
-from src.app.services import hip_consent_service, hiu_consent_service
+from src.app.services import hip_consent_service, hip_pairing, hiu_consent_service, link_token_service
 from src.app.outbox import engine
 
 logger = logging.getLogger("abdm_gateway.callbacks")
@@ -106,8 +106,10 @@ def receive(subpath):
             hiu_consent_service.record_fetch(body, hip_id, registration.api_client_id)
         elif path.endswith("hiu/health-information/on-request"):
             hiu_consent_service.record_on_request(body, registration.api_client_id)
+    if registration and path.endswith("hip/token/on-generate-token") and isinstance(body, dict):
+        link_token_service.record_issued(body, hip_id, event.id)
     if registration:
-        engine.enqueue(oj.KIND_FORWARD_CALLBACK, callback_event_id=event.id, api_client_id=registration.api_client_id)
+        hip_pairing.enqueue_forward(event, body, path, registration.api_client_id)
     db.session.commit()
 
     if registration:

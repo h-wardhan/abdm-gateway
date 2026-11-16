@@ -39,6 +39,24 @@ class HipConsent(TimestampMixin, db.Model):
     erase_at = db.Column(db.DateTime(timezone=True), nullable=True)  # permission.dataEraseAt: consent ends here
 
 
+class HipLinkToken(TimestampMixin, db.Model):
+    """The link token ABDM issued for a patient at a facility (callback `hip/token/on-generate-token`). The client app asks
+    for it and then uses it; i-medicus asks and uses it at once, before the callback arrived, and asks again when that
+    fails (ABDM answers "Duplicate Link token request"). With the token here the gateway uses the one ABDM issued, waits
+    for it when it is on its way, and does not ask ABDM twice."""
+    __tablename__ = "hip_link_tokens"
+    __table_args__ = (db.UniqueConstraint("hip_id", "abha_address", name="uq_hip_link_token"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    hip_id = db.Column(db.String(64), nullable=False, index=True)
+    abha_address = db.Column(db.String(255), nullable=False)
+    token_enc = db.Column(db.Text, nullable=True)                 # sealed like callback bodies
+    issued_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=True)   # `exp` of the token
+    requested_at = db.Column(db.DateTime(timezone=True), nullable=True)  # when we last asked ABDM for one
+    callback_event_id = db.Column(db.Integer, db.ForeignKey("callback_events.id", ondelete="SET NULL"), nullable=True)
+
+
 # HipTransfer.status
 TRANSFER_ACKNOWLEDGED = "ACKNOWLEDGED"  # the health-information request was acknowledged; nothing sent yet
 TRANSFER_PUSH_QUEUED = "PUSH_QUEUED"    # the HIU could not be reached; the worker retries the push

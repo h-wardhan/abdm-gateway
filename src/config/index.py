@@ -148,6 +148,17 @@ class Config:
     CALLBACK_BLOCKED_HOSTS = _env_list("CALLBACK_BLOCKED_HOSTS", "app.i-medicus.in")
     CALLBACK_RETENTION_DAYS = _env_int("CALLBACK_RETENTION_DAYS", 30)
 
+    # M2 (HIP): i-medicus builds, encrypts and pushes the records 10 seconds after a consent notice, with the keys of the
+    # health-information request that follows it. A request that comes later (the HIU fetches the consent first) finds no
+    # keys. So the gateway holds a GRANTED consent notice until that consent's request arrives (at most this long) and
+    # hands both to i-medicus together. 0 = forward at once.
+    HIP_CONSENT_HOLD_SECONDS = _env_int("HIP_CONSENT_HOLD_SECONDS", 90)
+    HIP_PAIR_DELAY_SECONDS = _env_int("HIP_PAIR_DELAY_SECONDS", 3)
+    # Link token: how long a link call waits for the token ABDM is about to send, and how long a request for one counts
+    # as "on its way" (no second request meanwhile: ABDM answers "Duplicate Link token request")
+    HIP_LINK_TOKEN_WAIT_SECONDS = _env_int("HIP_LINK_TOKEN_WAIT_SECONDS", 10)
+    HIP_LINK_TOKEN_PENDING_SECONDS = _env_int("HIP_LINK_TOKEN_PENDING_SECONDS", 60)
+
     # M3: a health-information request for a consent the gateway never heard of (made before it tracked consents) is let
     # through; set this to refuse those too.
     HIU_REQUIRE_KNOWN_CONSENT = _env_bool("HIU_REQUIRE_KNOWN_CONSENT", False)
@@ -209,6 +220,8 @@ class TestingConfig(Config):
     CALLBACK_BLOCKED_HOSTS = ["app.i-medicus.in"]
     PUSH_ALLOW_HTTP = False
     PUSH_ALLOW_PRIVATE_URLS = False
+    HIP_CONSENT_HOLD_SECONDS = 0       # tests of the hold turn it on
+    HIP_LINK_TOKEN_WAIT_SECONDS = 0
     OUTBOX_BACKOFF_SECONDS = [2, 10, 60, 300, 900, 3600]
     OUTBOX_MAX_ATTEMPTS = 6
     REDIS_URL = None

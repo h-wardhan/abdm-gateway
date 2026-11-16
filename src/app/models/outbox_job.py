@@ -34,6 +34,8 @@ class OutboxJob(TimestampMixin, db.Model):
     payload_enc = db.Column(db.Text, nullable=True)
     callback_event_id = db.Column(db.Integer, db.ForeignKey("callback_events.id", ondelete="CASCADE"), nullable=True, index=True)
     api_client_id = db.Column(db.Integer, db.ForeignKey("api_clients.id", ondelete="SET NULL"), nullable=True)
+    # forward of a HIP consent notice / health-information request that waits for its pair (see services/hip_pairing.py)
+    hold_consent_id = db.Column(db.String(64), nullable=True, index=True)
 
     def __repr__(self):
         return f"<OutboxJob {self.id} {self.kind} {self.status} attempts={self.attempts}>"

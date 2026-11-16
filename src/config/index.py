@@ -152,9 +152,10 @@ class Config:
     # health-information request that follows it. A request that comes later (the HIU fetches the consent first) finds no
     # keys. i-medicus' notice handler sleeps 5 s, THEN saves the consent id on its rows (a request that arrives before
     # that finds no row and is ignored), acknowledges, sleeps 10 s and builds the records: the request has to arrive in
-    # between (HIP_PAIR_DELAY_SECONDS after the notice starts). So the gateway holds a GRANTED consent notice until that consent's request arrives (at most this long) and
+    # between (HIP_PAIR_DELAY_SECONDS after the notice starts). ABDM hands the HIP the request 105-115 s after the notice
+    # (sandbox, 16 Nov 2026), so the hold must be longer than that (90 s ran out just before it arrived). So the gateway holds a GRANTED consent notice until that consent's request arrives (at most this long) and
     # hands both to i-medicus together. 0 = forward at once.
-    HIP_CONSENT_HOLD_SECONDS = _env_int("HIP_CONSENT_HOLD_SECONDS", 90)
+    HIP_CONSENT_HOLD_SECONDS = _env_int("HIP_CONSENT_HOLD_SECONDS", 240)
     HIP_PAIR_DELAY_SECONDS = _env_int("HIP_PAIR_DELAY_SECONDS", 8)
     # Link token: how long a link call waits for the token ABDM is about to send, and how long a request for one counts
     # as "on its way" (no second request meanwhile: ABDM answers "Duplicate Link token request")

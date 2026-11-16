@@ -238,9 +238,10 @@ ordering; the gateway absorbs them, so i-medicus is not changed.
 On `consent/request/hip/notify` i-medicus stores the consent id, sleeps 10 seconds, then builds, encrypts and pushes the
 records with the keys of the health-information request. When that request comes later (the HIU fetches the consent first,
 25-30 seconds on the sandbox) there are no keys: `fhir/encrypt` is called with an empty private key (400) and nothing is
-pushed. So a **GRANTED** notice is held (at most `HIP_CONSENT_HOLD_SECONDS`, 90; 0 turns the hold off) until the request of
+pushed. So a **GRANTED** notice is held (at most `HIP_CONSENT_HOLD_SECONDS`, 240; 0 turns the hold off) until the request of
 the same consent arrives; then the notice is released and the request is delivered `HIP_PAIR_DELAY_SECONDS` (8) after it, by a
-timer thread of the worker (the worker itself is busy with the notice during i-medicus' sleep). A grant that gets no request
+timer thread of the worker (the worker itself is busy with the notice during i-medicus' sleep). ABDM gives the HIP the request 105-115 seconds after the notice, so 90 seconds was too short (the notice left just before it
+arrived and i-medicus built the records with the transaction of the previous round). A grant that gets no request
 is delivered when the hold ends. Revoked and expired notices are not held. The 8 seconds come from i-medicus' notice handler:
 it sleeps 5 s, then saves the consent id on its rows, acknowledges, sleeps 10 s and builds the records; the request must
 arrive after the consent id is saved and before the records are built (3 seconds was too early: the request found no row

@@ -239,9 +239,12 @@ On `consent/request/hip/notify` i-medicus stores the consent id, sleeps 10 secon
 records with the keys of the health-information request. When that request comes later (the HIU fetches the consent first,
 25-30 seconds on the sandbox) there are no keys: `fhir/encrypt` is called with an empty private key (400) and nothing is
 pushed. So a **GRANTED** notice is held (at most `HIP_CONSENT_HOLD_SECONDS`, 90; 0 turns the hold off) until the request of
-the same consent arrives; then the notice is released and the request is delivered `HIP_PAIR_DELAY_SECONDS` (3) after it, by a
+the same consent arrives; then the notice is released and the request is delivered `HIP_PAIR_DELAY_SECONDS` (8) after it, by a
 timer thread of the worker (the worker itself is busy with the notice during i-medicus' sleep). A grant that gets no request
-is delivered when the hold ends. Revoked and expired notices are not held.
+is delivered when the hold ends. Revoked and expired notices are not held. The 8 seconds come from i-medicus' notice handler:
+it sleeps 5 s, then saves the consent id on its rows, acknowledges, sleeps 10 s and builds the records; the request must
+arrive after the consent id is saved and before the records are built (3 seconds was too early: the request found no row
+and was ignored; ABDM's retry of it came after the records were built, with a stale transaction id).
 
 **Consent range** (`hiu_service._range_end`). i-medicus' consent form takes a date and sends `toDate` as midnight
 (`2026-11-16T00:00:00.000Z`). ABDM then leaves out the care contexts of that day: on 16 Nov 2026 the patient's app listed only old

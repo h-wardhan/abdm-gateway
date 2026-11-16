@@ -10,6 +10,10 @@ sandbox) there are no keys, `fhir/encrypt` is called with an empty private key a
 So: the notice of a GRANTED consent waits (at most HIP_CONSENT_HOLD_SECONDS) for the request of that consent. When the
 request arrives, the notice is released at once and the request follows a few seconds later, inside i-medicus' sleep:
 the request is delivered by a timer thread because the worker is busy with the notice for its whole sleep.
+Timing (i-medicus' handler, WebhookTrait::onRequestHipNotify): +0 s the notice arrives, it sleeps 5 s, +5 s it saves the
+consent id on its rows, acknowledges, sleeps 10 s, +16 s it builds the records. The request must be handled in between,
+after the consent id is saved and early enough for its keys to exist: HIP_PAIR_DELAY_SECONDS = 8 (3 was too early: the
+request found no row and was ignored, and only ABDM's retry of it came too late).
 Without a request the notice is delivered after the hold, so nothing is lost.
 """
 import logging

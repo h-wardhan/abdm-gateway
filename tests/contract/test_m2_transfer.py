@@ -407,10 +407,17 @@ def test_notify_transferred_before_any_push_is_refused(flow):
     assert flow.calls(HI_NOTIFY) == []
 
 
-def test_notify_with_another_consent_id_is_refused(flow):
+def test_notify_with_another_consent_id_is_sent_with_the_consent_of_the_transaction(flow):
+    """i-medicus takes the consent id from its own rows, where a second consent notice overwrites it (sandbox, 16 Nov
+    2026: notify was refused after the records had been pushed). ABDM is told the consent of the transaction."""
     flow.acknowledged()
-    res = flow.notify(consent_id="someone-elses-consent")
-    assert res.status_code == 400 and res.get_json()["message"]["error"]["code"] == "CONSENT_MISMATCH"
+    sender, encrypted = flow.encrypt()
+    flow.http.add(responses.POST, HIU_URL, json={}, status=200)
+    assert flow.push(flow.push_body(sender, encrypted)).status_code == 200
+    res = flow.notify(consent_id="the-other-consent-of-the-same-care-context")
+    assert res.status_code == 200 and res.get_json()["data"]["status"] == "sent"
+    (n,) = flow.abdm_notifications()
+    assert n["consentId"] == CONSENT_ID and flow.transfer().status == "NOTIFIED"
 
 
 @pytest.mark.parametrize("body,field", [

@@ -422,8 +422,11 @@ def notify(client, data):
     transfer = _get(client, n.get("transactionId") or v.pick(data, "transactionId"))
     consent_id = n.get("consentId") or v.pick(data, "consentId")
     if consent_id and transfer.consent_id and str(consent_id) != transfer.consent_id:
-        raise ValidationError("consentId is not the consent of this transaction", code="CONSENT_MISMATCH",
-                              details={"field": "notification.consentId"})
+        # ABDM wants the consent of the transaction, which is the one it named in the health-information request (stored on
+        # the transfer and what _notification sends). i-medicus takes it from its own rows, where a second consent
+        # notice for the same care context overwrites it (seen on the sandbox: notify refused with CONSENT_MISMATCH).
+        logger.warning("notify: consentId of the client replaced by the consent of the transaction", extra={
+            "transaction_id": transfer.transaction_id})
     status_block = n.get("statusNotification") if isinstance(n.get("statusNotification"), dict) else {}
     session = str(v.require(status_block.get("sessionStatus"), "notification.statusNotification.sessionStatus")).upper()
     if session not in (SESSION_TRANSFERRED, SESSION_FAILED):

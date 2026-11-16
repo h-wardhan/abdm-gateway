@@ -251,6 +251,12 @@ and was ignored; ABDM's retry of it came after the records were built, with a st
 visits, and with a real time in `toDate` the new ones appeared. The gateway now treats a midnight `toDate` as "to the end of
 that day, and never later than a minute ago" (ABDM refuses a future date); a `toDate` with another time is sent as it is.
 
+**Notify with another consent id.** i-medicus sends the consent id of its own `hip_link_requests` row, and a second consent
+notice for the same care context overwrites it (two artefacts), so the status notification named a consent that is not the one of
+the transaction: the gateway refused it (400 `CONSENT_MISMATCH`) after the records had been pushed and ABDM was never told.
+The gateway now logs a warning and sends the consent ABDM named in the health-information request (the one stored on the
+transfer); the transaction belongs to the calling client, so nothing else can be reported this way.
+
 Also: the description of a FAILED transfer notification is now letters, digits, spaces and `. _ -` only (ABDM answered
 "Invalid description" to the HIU's JSON error copied in).
 

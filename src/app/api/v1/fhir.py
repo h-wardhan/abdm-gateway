@@ -130,9 +130,12 @@ class Encrypt(CredentialsResource):
                         "`keyMaterial.dhPublicKey.keyValue` of the push.")
     @examples.body(ns, "FhirEncrypt")
     def post(self):
-        data = body()
+        data, transfer = hip_transfer_service.fit_encrypt(g.client, body())
         encrypted = crypto_service.encrypt(data)
-        hip_transfer_service.remember_sender_key(g.client, data, encrypted)
+        if transfer is not None:
+            hip_transfer_service.note_sender_key(transfer, encrypted)
+        else:
+            hip_transfer_service.remember_sender_key(g.client, data, encrypted)
         return encrypted
 
 

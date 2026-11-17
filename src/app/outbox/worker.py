@@ -60,7 +60,7 @@ def lane_of(job_id):
     import json
     from src.app.callbacks import vault
     from src.app.services import hip_pairing  # late: the service imports the engine
-    row = (db.session.query(OutboxJob.hold_consent_id, CallbackEvent.path, CallbackEvent.body_enc)
+    row = (db.session.query(OutboxJob.hold_consent_id, CallbackEvent.path, CallbackEvent.body_enc, OutboxJob.api_client_id)
            .outerjoin(CallbackEvent, OutboxJob.callback_event_id == CallbackEvent.id)
            .filter(OutboxJob.id == job_id).first())
     if not (row and row[0] and row[1]):
@@ -69,6 +69,8 @@ def lane_of(job_id):
         return REQUEST_LANE, str(row[0])
     if not row[1].endswith(hip_pairing.NOTICE):
         return OTHER_LANE, None
+    if current_app.config.get("HIP_ONE_NOTICE_PER_CLIENT"):
+        return NOTICE_LANE, f"client:{row[3]}"
     try:
         patient = json.loads(vault.open_text(row[2]))["notification"]["consentDetail"]["patient"]["id"]
     except (ValueError, KeyError, TypeError):

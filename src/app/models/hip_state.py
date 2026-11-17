@@ -84,6 +84,7 @@ class HipTransfer(TimestampMixin, db.Model):
     hiu_nonce = db.Column(db.String(64), nullable=True)
     sender_public_key = db.Column(db.Text, nullable=True)          # what the Encrypt call for that key answered
     sender_nonce = db.Column(db.String(64), nullable=True)         # (`keyToShare` and the sender nonce used)
+    sender_private_key_enc = db.Column(db.Text, nullable=True)     # sealed; the sender key of this transfer, dropped when it ends
     status = db.Column(db.String(20), nullable=False, default=TRANSFER_ACKNOWLEDGED, index=True)
     care_contexts = db.Column(db.JSON, nullable=True)              # care contexts pushed: [careContextReference, ...]
     pending_notify = db.Column(db.JSON, nullable=True)             # notification waiting for a queued push to land

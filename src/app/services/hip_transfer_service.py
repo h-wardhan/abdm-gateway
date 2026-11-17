@@ -15,6 +15,8 @@ import ipaddress
 import json
 import logging
 import re
+import time
+from datetime import timedelta
 from urllib.parse import urlsplit
 
 import requests
@@ -27,7 +29,7 @@ from src.app.callbacks import registry, vault
 from src.app.common import validators as v
 from src.app.errors import AppError, ConflictError, ForbiddenError, NotFoundError, ValidationError
 from src.app.extensions import db
-from src.app.models import HipTransfer
+from src.app.models import CallbackEvent, HipTransfer, OutboxJob
 from src.app.models import hip_state as hs
 from src.app.models import outbox_job as oj
 from src.app.models.base import as_utc, utcnow
@@ -107,6 +109,22 @@ def remember_sender_key(client, data, encrypted):
         db.session.commit()
 
 
+def _with_own_key_material(transfer, data):
+    """The key material of the push is the gateway's own when it chose the sender key for this transfer (encrypt): i-medicus
+    takes `keyMaterial` from its rows, which are empty when its keys were not saved yet (nonce null, no expiry)."""
+    if not (transfer.sender_private_key_enc and transfer.sender_public_key and transfer.sender_nonce):
+        return data
+    from types import SimpleNamespace
+    block = fidelius.key_material_block(SimpleNamespace(x509_public_key_b64=transfer.sender_public_key,
+                                                        nonce_b64=transfer.sender_nonce))
+    given = data.get("keyMaterial")
+    if isinstance(given, dict):  # the client's expiry, when it sent a valid one, is kept
+        expiry = (given.get("dhPublicKey") or {}).get("expiry")
+        if hip_consent_service.parse_time(expiry) and hip_consent_service.parse_time(expiry) > utcnow():
+            block["dhPublicKey"]["expiry"] = expiry
+    return {**data, "keyMaterial": block}
+
+
 def _use_sender_key(transfer, body):
     """Put the key and nonce the record was encrypted with into the push body when the client sent others."""
     if not transfer.sender_public_key or not transfer.sender_nonce:
@@ -120,6 +138,109 @@ def _use_sender_key(transfer, body):
         "transaction_id": transfer.transaction_id})
     material["nonce"] = transfer.sender_nonce
     material["dhPublicKey"]["keyValue"] = transfer.sender_public_key
+
+
+# ---- the notice being handled right now: which transfer an i-medicus call belongs to -----------------------------------
+# i-medicus builds the records inside its consent-notice handler and takes the transaction id and the keys from its own rows. A
+# second notice for the same care contexts, a request handled late or an empty row all give a call with the wrong transaction
+# or with no keys. With one notice at a time per client (worker lanes) every fhir/encrypt, push and notify call of that client
+# belongs to the consent of the notice being handled, and the gateway holds that consent's transaction and HIU key from ABDM's
+# own request. So it uses its own.
+
+ACTIVE_NOTICE_SECONDS = 600
+
+
+def active_transfer(client):
+    """The latest transfer of the consent whose notice i-medicus is handling for this client right now, waiting up to
+    HIP_TRANSFER_WAIT_SECONDS for its health-information request; None when there is no such notice (or more than one)."""
+    config = current_app.config
+    if not config.get("HIP_ONE_NOTICE_PER_CLIENT"):
+        return None
+    suffix = "consent/request/hip/notify"
+    rows = (db.session.query(OutboxJob.hold_consent_id, CallbackEvent.path)
+            .join(CallbackEvent, OutboxJob.callback_event_id == CallbackEvent.id)
+            .filter(OutboxJob.api_client_id == client.id, OutboxJob.kind == oj.KIND_FORWARD_CALLBACK,
+                    OutboxJob.status == oj.PROCESSING, OutboxJob.hold_consent_id.isnot(None),
+                    OutboxJob.updated_at >= utcnow() - timedelta(seconds=ACTIVE_NOTICE_SECONDS)).all())
+    consents = {consent for consent, path in rows if path.endswith(suffix)}
+    if len(consents) != 1:
+        return None
+    consent_id = consents.pop()
+    deadline = time.monotonic() + config.get("HIP_TRANSFER_WAIT_SECONDS", 0)
+    while True:
+        row = (HipTransfer.query.filter_by(api_client_id=client.id, consent_id=consent_id)
+               .order_by(HipTransfer.id.desc()).first())
+        if row is not None or time.monotonic() >= deadline:
+            return row
+        time.sleep(0.5)
+        db.session.expire_all()
+
+
+def _covered(transfer, references):
+    """Are all of these care contexts covered by the consent of the transfer? (No references or an unknown consent: yes.)"""
+    if not references:
+        return True
+    consent = hs.HipConsent.query.filter_by(consent_id=transfer.consent_id).first() if transfer.consent_id else None
+    allowed = {c.get("careContextReference") for c in (consent.care_contexts if consent else None) or []
+               if isinstance(c, dict)}
+    return not allowed or set(references) <= allowed
+
+
+def _resolve(client, transaction_id, references=None):
+    """(transfer, replaced). The transfer of the call: the one named by the client, unless a notice is being handled for this
+    client and the named one is another consent's (or unknown) while the care contexts belong to the notice's consent."""
+    active = active_transfer(client)
+    given = str(transaction_id or "").strip()[:64]
+    row = HipTransfer.query.filter_by(api_client_id=client.id, transaction_id=given).first() if given else None
+    if active is not None and (row is None or row.consent_id != active.consent_id) and _covered(active, references):
+        logger.warning("transfer call: the transaction of the client replaced by the one of the consent being handled", extra={
+            "given": given, "transaction_id": active.transaction_id})
+        return active, True
+    if row is None:
+        return _get(client, transaction_id), False
+    return row, False
+
+
+def fit_encrypt(client, data):
+    """Encrypt body for the transfer being handled: the HIU's key and nonce of its request, and ONE sender key for all its
+    records (the client's if it sent a usable one, else a fresh one, kept sealed until the transfer ends). (data, transfer);
+    the body is returned as it came when no notice is being handled."""
+    transfer = active_transfer(client)
+    if transfer is None or not transfer.hiu_public_key or not transfer.hiu_nonce:
+        return data, None
+    out = dict(data)
+    if _canonical_key(out.get("receiverPublicKey")) != transfer.hiu_public_key or str(
+            out.get("receiverNonce") or "") != (transfer.hiu_nonce or ""):
+        logger.warning("encrypt: the HIU key of the client replaced by the one of the request being handled", extra={
+            "transaction_id": transfer.transaction_id})
+    out["receiverPublicKey"], out["receiverNonce"] = transfer.hiu_public_key, transfer.hiu_nonce
+    if transfer.sender_private_key_enc and transfer.sender_nonce:
+        out["senderPrivateKey"] = vault.open_text(transfer.sender_private_key_enc)
+        out["senderNonce"] = transfer.sender_nonce
+        out.pop("senderPublicKey", None)
+    else:
+        private, nonce = str(out.get("senderPrivateKey") or "").strip(), str(out.get("senderNonce") or "").strip()
+        try:
+            fidelius.public_key_from_private(private)
+            usable = bool(nonce)
+        except fidelius.FideliusError:
+            usable = False
+        if not usable:
+            fresh = fidelius.generate_key_material()
+            private, nonce = fresh.private_key_b64, fresh.nonce_b64
+            logger.warning("encrypt: no usable sender key from the client, one was generated", extra={
+                "transaction_id": transfer.transaction_id})
+            out["senderPrivateKey"], out["senderNonce"] = private, nonce
+            out.pop("senderPublicKey", None)
+        transfer.sender_private_key_enc = vault.seal_text(private)
+        transfer.sender_nonce = nonce[:64]
+        db.session.commit()
+    return out, transfer
+
+
+def note_sender_key(transfer, encrypted):
+    transfer.sender_public_key = encrypted["keyToShare"]
+    db.session.commit()
 
 
 def _get(client, transaction_id):
@@ -272,6 +393,7 @@ def _consent_ok(transfer, client_id):
 
 def _mark_pushed(transfer, references):
     transfer.status = hs.TRANSFER_PUSHED
+    transfer.sender_private_key_enc = None
     transfer.care_contexts = references
     transfer.pushed_at = utcnow()
     transfer.last_error = None
@@ -280,7 +402,11 @@ def _mark_pushed(transfer, references):
 
 def push(client, data):
     """Push the encrypted records to the HIU. Returns {"status": "sent" | "queued" | "already_sent", ...}."""
-    transfer = _get(client, data.get("transactionId"))
+    references = [str(e.get("careContextReference")) for e in data.get("entries") or []
+                  if isinstance(e, dict) and e.get("careContextReference")]
+    transfer, replaced = _resolve(client, data.get("transactionId"), references)
+    if replaced:
+        data = {**data, "transactionId": transfer.transaction_id}
     if transfer.status in (hs.TRANSFER_PUSHED, hs.TRANSFER_NOTIFIED):
         return _result(transfer, "already_sent")
     if transfer.status == hs.TRANSFER_PUSH_QUEUED:
@@ -290,7 +416,7 @@ def push(client, data):
                             code="TRANSFER_FAILED", details={"lastError": transfer.last_error})
 
     given = v.pick(data, "pushUrl", "dataPushUrl")
-    if given and transfer.data_push_url and given.rstrip("/") != transfer.data_push_url.rstrip("/"):
+    if given and not replaced and transfer.data_push_url and given.rstrip("/") != transfer.data_push_url.rstrip("/"):
         raise ValidationError("pushUrl is not the one ABDM gave for this transaction", code="PUSH_URL_MISMATCH")
     url = validate_push_url(transfer.data_push_url or given)
     try:
@@ -298,7 +424,7 @@ def push(client, data):
     except ForbiddenError as exc:
         _fail(transfer, exc.message)
         raise
-    body = _push_body(data, consent)
+    body = _push_body(_with_own_key_material(transfer, data), consent)
     _use_sender_key(transfer, body)
     references = [e["careContextReference"] for e in body["entries"]]
 
@@ -410,6 +536,7 @@ def _send_notification(transfer, session_status, responses):
                         transfer.api_client_id, "hip/health-information/notify")
     transfer.status = hs.TRANSFER_NOTIFIED if session_status == SESSION_TRANSFERRED else hs.TRANSFER_FAILED
     transfer.notified_at = utcnow()
+    transfer.sender_private_key_enc = None
     transfer.pending_notify = None
     db.session.commit()
     return result
@@ -418,6 +545,7 @@ def _send_notification(transfer, session_status, responses):
 def _fail(transfer, reason):
     """Give up on this transfer and tell ABDM (once)."""
     transfer.status = hs.TRANSFER_FAILED
+    transfer.sender_private_key_enc = None
     transfer.last_error = (reason or "")[:500]
     db.session.commit()
     if transfer.notified_at is not None:
@@ -445,7 +573,10 @@ def _flush_pending(transfer):
 def notify(client, data):
     """Tell ABDM how the transfer went. Accepts i-medicus' `{notification: {...}}`."""
     n = data.get("notification") if isinstance(data.get("notification"), dict) else {}
-    transfer = _get(client, n.get("transactionId") or v.pick(data, "transactionId"))
+    status_refs = [str(r.get("careContextReference")) for r in
+                   ((n.get("statusNotification") or {}).get("statusResponses") or [])
+                   if isinstance(r, dict) and r.get("careContextReference")]
+    transfer, _replaced = _resolve(client, n.get("transactionId") or v.pick(data, "transactionId"), status_refs)
     consent_id = n.get("consentId") or v.pick(data, "consentId")
     if consent_id and transfer.consent_id and str(consent_id) != transfer.consent_id:
         # ABDM wants the consent of the transaction, which is the one it named in the health-information request (stored on

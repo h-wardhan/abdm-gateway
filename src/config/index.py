@@ -161,6 +161,12 @@ class Config:
     HIP_ACK_NOTICE_AT_ONCE = _env_bool("HIP_ACK_NOTICE_AT_ONCE", True)
     HIP_NOTICE_HOLD_SECONDS = _env_int("HIP_NOTICE_HOLD_SECONDS", 900)
     HIP_PAIR_DELAY_SECONDS = _env_int("HIP_PAIR_DELAY_SECONDS", 8)
+    # One consent notice at a time per client app (facility owner): while i-medicus handles it, every fhir/encrypt, push and notify
+    # call of that client belongs to that notice's consent, so the gateway uses the HIU key and transaction it holds itself and
+    # never depends on the rows (or the timing) of i-medicus. false = one notice at a time per patient (the older behaviour).
+    HIP_ONE_NOTICE_PER_CLIENT = _env_bool("HIP_ONE_NOTICE_PER_CLIENT", True)
+    # How long an encrypt / push / notify call waits for the health-information request of the notice being handled
+    HIP_TRANSFER_WAIT_SECONDS = _env_int("HIP_TRANSFER_WAIT_SECONDS", 30)
     # acknowledgements held at once per web process (each one occupies a web thread); beyond it they are answered at once
     HIP_MAX_ACK_WAITS = _env_int("HIP_MAX_ACK_WAITS", 48)
     # Link token: how long a link call waits for the token ABDM is about to send, and how long a request for one counts
@@ -240,6 +246,8 @@ class TestingConfig(Config):
     HIP_CONSENT_ACK_WAIT_SECONDS = 0   # the tests of the wait turn it on
     HIP_ACK_NOTICE_AT_ONCE = False     # the tests of the acknowledge-and-hold turn it on
     HIP_NOTICE_HOLD_SECONDS = 0
+    HIP_ONE_NOTICE_PER_CLIENT = False   # the tests of the delivery context turn it on
+    HIP_TRANSFER_WAIT_SECONDS = 0
     HIP_KEYS_SETTLE_SECONDS = 0
     HIP_LINK_TOKEN_WAIT_SECONDS = 0
     OUTBOX_BACKOFF_SECONDS = [2, 10, 60, 300, 900, 3600]

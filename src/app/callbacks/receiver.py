@@ -114,6 +114,8 @@ def receive(subpath):
 
     if registration and path.endswith(hip_pairing.NOTICE) and isinstance(body, dict):
         hip_pairing.ack_notice_now(event, body, registration.api_client_id)  # never raises
+    if registration and path.endswith(hip_pairing.REQUEST) and isinstance(body, dict):
+        hip_pairing.ack_request_now(event, body, registration.api_client_id)  # never raises
 
     if registration:
         logger.info("Callback queued", extra={"callback_path": path, "hip_id": hip_id, "abdm_request_id": request_id,

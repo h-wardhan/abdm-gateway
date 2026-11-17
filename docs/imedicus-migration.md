@@ -254,11 +254,36 @@ What the gateway does now (needs nothing from i-medicus):
    requests (up to `WORKER_CONCURRENCY` beside the notices) so a request always finds one.
 4. Notices of one patient go one at a time (the worker's lanes), because they share i-medicus' rows.
 
-Limits, stated plainly: the request has to reach i-medicus between +5 s and +16 s of its notice, so the margin is about 8 s and
-depends on the gateway answering `on-request` quickly under load. `scripts/simulate_hip_flow.py` (fake ABDM, fake i-medicus, the
-real gateway; `--slow 10` = real time) passed 30 of 30 conversions for 10 patients x 3 consents, but it does not reproduce the old
-failure (the old mode passes it too), so it shows the new mode does not break, not that it is better. A builder that already ran
-cannot run again (one-shot), so a repeated request logs a 422. ABDM's expiry of a transaction is not known.
+**The delivery context: the gateway does not trust i-medicus' rows** (`hip_transfer_service.active_transfer / fit_encrypt / _resolve`,
+`HIP_ONE_NOTICE_PER_CLIENT`, `HIP_TRANSFER_WAIT_SECONDS`, migration 0009). Acknowledging and holding alone left a window of a few
+seconds (the sandbox run of 17 Nov 2026: the request reached i-medicus 8 s after its notice, i-medicus' request handler then took
+~10 s before it saved the keys, the records were built 1 s earlier: `fhir/encrypt` 400 `senderPrivateKey is required`, nothing
+pushed). i-medicus builds inside its notice handler and reads transaction and keys from its own rows, so a late or overwritten
+row means empty keys or a previous consent's transaction. The gateway now:
+1. stores ABDM's health-information request when it **arrives** (transaction, consent, HIU key and nonce, push URL) and
+   acknowledges it itself (`ack_request_now`); i-medicus' acknowledgement later is `already_sent`;
+2. lets **one consent notice at a time per client app** run (worker lane), so while i-medicus handles a notice every
+   `fhir/encrypt`, `push` and `notify` call of that client belongs to that notice's consent (`active_transfer`);
+3. `fhir/encrypt` then uses the HIU key and nonce of that request whatever the body says, and one sender key for all records of
+   the transfer (the client's if usable, else a fresh one kept sealed in `hip_transfers.sender_private_key_enc` and dropped when
+   the transfer ends); `push` goes out under that transaction, to the URL ABDM gave, with the gateway's own `keyMaterial` (the
+   client's has a null nonce when its keys are empty); `notify` tells ABDM about that transaction and consent. Only when the
+   care contexts of the call are covered by that consent; otherwise the client's transaction is used as before;
+4. a call that arrives before the request waits up to `HIP_TRANSFER_WAIT_SECONDS` (30) for it. With no notice being handled (the
+   video-call flow), or two at once, nothing changes: the old rules apply.
+`HIP_ONE_NOTICE_PER_CLIENT=false` turns this off (one notice at a time per patient, as before).
+
+**Verified** (`tests/contract/test_m2_delivery_context.py`, 18 tests; `scripts/simulate_hip_flow.py`: real receiver, worker and
+routes, a fake i-medicus with its rows and sleeps, a fake HIU that decrypts every page): the old gateway fails the simulation
+(`encrypt 400` for every consent, as on the sandbox); the new one delivers every consent exactly once under its own transaction and
+tells ABDM TRANSFERRED once each: 8/8 (4 patients x 2 consents), 30/30 (10 x 3), 12/12 with an i-medicus request handler of 60 s.
+Automated: two record types, all eight types, one 3 MB record, one consent of 60 care contexts, all with empty i-medicus keys.
+
+**Cost and limits, stated plainly.** One notice at a time per client app means throughput of one consent per client per
+17-45 s (i-medicus' handler), about 100-200 an hour per facility owner, many clients in parallel. That is correctness first; it is
+not lakhs an hour for one client. The lasting fix for throughput is still in i-medicus (below). Not tested: Postgres under load,
+ABDM under load. A builder that already ran cannot run again (one-shot), so a repeated request logs a 422. ABDM's expiry of a
+transaction is not known. If two consents cover the same care contexts, the call is given to the notice being handled.
 
 **The worker runs jobs side by side** (`WORKER_CONCURRENCY`, 16; `outbox/worker.py`). Jobs run in a pool; the HIP consent notices
 go **one at a time per patient**. `WORKER_CONCURRENCY=1` is the old behaviour.
@@ -290,12 +315,23 @@ delivered exactly once, none lost, never more than one notice of the same patien
 once. Not tested: Postgres under load (the run above is on a SQLite file, where every claim costs ~12 ms of disk sync, so its
 throughput says nothing about production), the held acknowledgement under many concurrent web threads, and ABDM itself under load.
 
-**The lasting fix, in i-medicus (not applied)** (`WebhookTrait`). Stop sleeping in `onRequestHipNotify`: save the consent id and
-acknowledge only; build, encrypt and push in `onHealthInformationRequest`, after it has saved the transaction id and the sender
-keys (`ConvertRecordToFHIR`). The records are then built with the keys of the very request that asked for them, with no timing
-window, and the 17-45 s per notice becomes milliseconds. `fhir/encrypt` cannot be made safe on the gateway alone: when i-medicus
-builds before its keys exist it sends empty keys and no consent or patient, and the Bundle holds neither an ABHA address nor a
-care context, so the gateway cannot tell which transfer the call belongs to.
+**What i-medicus does in M2 and M3, and what it reads from its own database** (read from `WebhookTrait` / `ABDMService`, 17 Nov 2026).
+- M2 (HIP, it holds the records): `onRequestHipNotify` finds `hip_link_requests` rows by `care_reference_number` and saves consent
+  id, status, request id, purpose, date range, hip id on them, acknowledges, then `ConvertRecordToFHIR` loads all rows with that
+  `consent_id`, builds each record (`FHIRApi`: appointment, prescription, diagnostic, invoice... tables), and takes receiver key and
+  nonce, sender keys, expiry and push URL from `hip_link_request_keys` and the transaction from `hip_link_requests.transaction_id`.
+  `onHealthInformationRequest` finds the row by consent id, saves the transaction id, acknowledges and saves the keys.
+  Everything ABDM-specific (transaction, HIU key, push URL, consent, keys, encryption, status) is therefore also held by the
+  gateway; i-medicus' rows only matter for **which records to build**.
+- M3 (HIU, it asks for records): `hiu/consent/request/notify` fills `consent_artifacts`, `hiu/consent/on-fetch`
+  `consent_artifact_details` (and the HIU key pair in `consent_keys`), `hiu/health-information/on-request` stores the transaction
+  id on the detail, and the HIP's push to `/api/abdm-webhook` is decrypted (`decryptHealthInfo` -> `Decrypt/decrypt`) and saved in
+  `consent_health_data` (one row per page, which is why the gateway pushes one record per page). The gateway needs nothing from
+  these tables.
+
+**The lasting fix for throughput, in i-medicus (not applied)** (`WebhookTrait`). Stop sleeping in `onRequestHipNotify`: save the
+consent id and acknowledge only; build, encrypt and push in `onHealthInformationRequest`. A notice then takes milliseconds
+instead of 17-45 s and a facility owner is no longer limited to one consent at a time. The gateway works without it.
 
 **Consent range** (`hiu_service._range_end`). i-medicus' consent form takes a date and sends `toDate` as midnight
 (`2026-11-16T00:00:00.000Z`). ABDM then leaves out the care contexts of that day: on 16 Nov 2026 the patient's app listed only old

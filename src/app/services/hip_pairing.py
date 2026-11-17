@@ -118,6 +118,25 @@ def ack_notice_now(event, body, api_client_id):
         return None
 
 
+def ack_request_now(event, body, api_client_id):
+    """A health-information request arrived: remember the transfer (transaction, HIU key, push URL) and acknowledge it to ABDM,
+    right away, as a HIP should. i-medicus' own acknowledgement later is "already_sent". The gateway then holds the HIU's key
+    before i-medicus has even seen the request, which is what lets encrypt / push / notify not depend on i-medicus' rows. Never
+    raises: a consent that is not usable is simply not acknowledged here (i-medicus' own call is then refused as before)."""
+    if not acks_at_once() or not _request_consent(body) or not _dict(body).get("transactionId"):
+        return None
+    try:
+        from src.app.services import hip_service  # late: services import each other
+        client = db.session.get(ApiClient, api_client_id)
+        if client is None or not event.hip_id:
+            return None
+        return hip_service.hi_on_request(client, {"transactionId": body["transactionId"], "requestId": event.request_id})
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        logger.info("Health-information request not acknowledged at once: %s", exc)
+        return None
+
+
 def wait_for_request(consent_id):
     """Fallback when the gateway does not acknowledge notices itself: hold the answer to i-medicus' acknowledgement until the
     request of this consent has been handled. Returns True when it was (and its keys had time to be fetched), False when the

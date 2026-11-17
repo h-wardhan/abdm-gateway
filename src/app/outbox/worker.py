@@ -52,30 +52,48 @@ OTHER_LANE = "other"
 _LANES = {}  # job id -> (lane, key): a job waiting for its patient is looked at every pass; its lane does not change
 
 
-def lane_of(job_id):
-    """(lane, key). HIP consent notices of ONE patient go one at a time: i-medicus keeps the consent id and transaction of a
-    care context on one row, so two notices of the same patient handled together overwrite each other. A health-information
-    request is its own lane (key: the consent) and is held back until its notice is running (see request_ready). Notices of
-    different patients and ABDM's other callbacks all run alongside."""
+def _patient_of_notice(body_enc):
     import json
     from src.app.callbacks import vault
+    try:
+        return str(json.loads(vault.open_text(body_enc))["notification"]["consentDetail"]["patient"]["id"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _patient_of_consent(consent_id):
+    """The patient a consent belongs to: read from the stored consent notice of that consent."""
+    from src.app.services import hip_pairing  # late: the service imports the engine
+    row = (db.session.query(CallbackEvent.body_enc)
+           .join(OutboxJob, OutboxJob.callback_event_id == CallbackEvent.id)
+           .filter(OutboxJob.kind == "forward_callback", OutboxJob.hold_consent_id == consent_id,
+                   CallbackEvent.path.like("%" + hip_pairing.NOTICE)).order_by(OutboxJob.id.desc()).first())
+    return _patient_of_notice(row[0]) if row else None
+
+
+def lane_of(job_id):
+    """(lane, key, patient, consent). i-medicus keeps the consent id and the transaction of a care context on ONE row, so the
+    notice and the health-information request handlers of one patient must not overlap: a notice of the same patient
+    overwrites the consent id while the request of the previous consent is still being handled (the records then go out
+    with another consent's transaction: ABDM 403 / "Invalid Consent artefact id"). So per PATIENT: one notice or one request
+    at a time, except a request beside its own notice (the older i-medicus handled both together). A health-information
+    request is held back until its notice is running or done (see request_ready). Different patients, and ABDM's other
+    callbacks, all run alongside. With HIP_ONE_NOTICE_PER_CLIENT the notices of a client also go one at a time."""
     from src.app.services import hip_pairing  # late: the service imports the engine
     row = (db.session.query(OutboxJob.hold_consent_id, CallbackEvent.path, CallbackEvent.body_enc, OutboxJob.api_client_id)
            .outerjoin(CallbackEvent, OutboxJob.callback_event_id == CallbackEvent.id)
            .filter(OutboxJob.id == job_id).first())
     if not (row and row[0] and row[1]):
-        return OTHER_LANE, None
+        return OTHER_LANE, None, None, None
+    consent = str(row[0])
     if row[1].endswith(hip_pairing.REQUEST):
-        return REQUEST_LANE, str(row[0])
+        return REQUEST_LANE, consent, _patient_of_consent(consent), consent
     if not row[1].endswith(hip_pairing.NOTICE):
-        return OTHER_LANE, None
+        return OTHER_LANE, None, None, None
+    patient = _patient_of_notice(row[2])
     if current_app.config.get("HIP_ONE_NOTICE_PER_CLIENT"):
-        return NOTICE_LANE, f"client:{row[3]}"
-    try:
-        patient = json.loads(vault.open_text(row[2]))["notification"]["consentDetail"]["patient"]["id"]
-    except (ValueError, KeyError, TypeError):
-        patient = None
-    return NOTICE_LANE, str(patient or row[0])
+        return NOTICE_LANE, f"client:{row[3]}", patient, consent
+    return NOTICE_LANE, str(patient or consent), patient, consent
 
 
 def request_ready(consent_id):
@@ -102,16 +120,30 @@ def _run_in_thread(app, job_id):
         db.session.remove()
 
 
+def _patient_free(patient, lane, consent, flying):
+    """May a job of this patient start beside the ones in flight? A notice waits for every request of the patient; a request waits
+    for the other requests and for the notices of other consents (its own notice may still be running)."""
+    if not patient:
+        return True
+    for _job, other_lane, _key, other_patient, other_consent in flying:
+        if other_patient != patient or other_lane == OTHER_LANE:
+            continue
+        if lane == NOTICE_LANE or other_lane == REQUEST_LANE or other_consent != consent:
+            return False
+    return True
+
+
 def dispatch(app, pool, inflight, concurrency):
-    """Claim due jobs for the free slots and hand them to the pool. `inflight` maps future -> (job id, lane, key).
-    `concurrency` jobs besides the requests may run, and up to `concurrency` health-information requests beside them (a notice
-    waits in a slot for its request, so the request must always find one). Returns how many were started."""
+    """Claim due jobs for the free slots and hand them to the pool. `inflight` maps future -> (job id, lane, key, patient,
+    consent). `concurrency` jobs besides the requests may run, and up to `concurrency` health-information requests beside them
+    (a notice may wait in a slot for its request, so the request must always find one). Returns how many were started."""
     for future in [f for f in inflight if f.done()]:
         inflight.pop(future)
-    running = {job_id for job_id, _lane, _key in inflight.values()}
-    busy = {key for _job_id, lane, key in inflight.values() if lane == NOTICE_LANE}
-    requests = sum(1 for _j, lane, _k in inflight.values() if lane == REQUEST_LANE)
-    others = len(inflight) - requests
+    flying = list(inflight.values())
+    running = {item[0] for item in flying}
+    busy = {item[2] for item in flying if item[1] == NOTICE_LANE}
+    requests = sum(1 for item in flying if item[1] == REQUEST_LANE)
+    others = len(flying) - requests
     started = 0
     seen = set()
     # Walk the queue in batches until the slots are full or nothing new is due. Jobs that must wait (a patient whose notice is
@@ -129,16 +161,19 @@ def dispatch(app, pool, inflight, concurrency):
                 if len(_LANES) > 20000:
                     _LANES.clear()
                 _LANES[job_id] = lane_of(job_id)
-            lane, key = _LANES[job_id]
+            lane, key, patient, consent = _LANES[job_id]
             if lane == REQUEST_LANE:
-                if requests >= concurrency or not request_ready(key):
+                if requests >= concurrency or not _patient_free(patient, lane, consent, flying) or not request_ready(key):
                     continue
             else:
-                if others >= concurrency or (lane == NOTICE_LANE and key in busy):
+                if others >= concurrency or (lane == NOTICE_LANE and (key in busy or not _patient_free(patient, lane, consent, flying))):
                     continue
             if engine._claim(job_id, utcnow()):
                 _LANES.pop(job_id, None)
-                inflight[pool.submit(_run_in_thread, app, job_id)] = (job_id, lane, key)
+                item = (job_id, lane, key, patient, consent)
+                inflight[pool.submit(_run_in_thread, app, job_id)] = item
+                flying.append(item)
+                running.add(job_id)
                 started += 1
                 if lane == REQUEST_LANE:
                     requests += 1

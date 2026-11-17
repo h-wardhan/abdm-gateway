@@ -186,12 +186,20 @@ def _covered(transfer, references):
     return not allowed or set(references) <= allowed
 
 
-def _resolve(client, transaction_id, references=None):
-    """(transfer, replaced). The transfer of the call: the one named by the client, unless a notice is being handled for this
-    client and the named one is another consent's (or unknown) while the care contexts belong to the notice's consent."""
-    active = active_transfer(client)
+_PUSH_DONE = (hs.TRANSFER_PUSHED, hs.TRANSFER_NOTIFIED, hs.TRANSFER_FAILED)
+_NOTIFY_DONE = (hs.TRANSFER_NOTIFIED, hs.TRANSFER_FAILED)
+
+
+def _resolve(client, transaction_id, references=None, done=_PUSH_DONE):
+    """(transfer, replaced). The transfer of the call: the one named by the client when it is a live transfer (that is what an
+    i-medicus does that builds in its request handler, with the transaction and keys of that very request). Only when the
+    transaction is unknown or already finished, and a notice is being handled for this client, and the care contexts belong to
+    that notice's consent, the notice's transfer is used instead."""
     given = str(transaction_id or "").strip()[:64]
     row = HipTransfer.query.filter_by(api_client_id=client.id, transaction_id=given).first() if given else None
+    if row is not None and row.status not in done:
+        return row, False
+    active = active_transfer(client)
     if active is not None and (row is None or row.consent_id != active.consent_id) and _covered(active, references):
         logger.warning("transfer call: the transaction of the client replaced by the one of the consent being handled", extra={
             "given": given, "transaction_id": active.transaction_id})
@@ -205,6 +213,11 @@ def fit_encrypt(client, data):
     """Encrypt body for the transfer being handled: the HIU's key and nonce of its request, and ONE sender key for all its
     records (the client's if it sent a usable one, else a fresh one, kept sealed until the transfer ends). (data, transfer);
     the body is returned as it came when no notice is being handled."""
+    given_key = _canonical_key(data.get("receiverPublicKey")) if data.get("receiverPublicKey") else None
+    if given_key and HipTransfer.query.filter(
+            HipTransfer.api_client_id == client.id, HipTransfer.hiu_public_key == given_key,
+            HipTransfer.status.in_((hs.TRANSFER_ACKNOWLEDGED, hs.TRANSFER_PUSH_QUEUED))).first() is not None:
+        return data, None  # the key of a live request: the client built this record with the keys of that request
     transfer = active_transfer(client)
     if transfer is None or not transfer.hiu_public_key or not transfer.hiu_nonce:
         return data, None
@@ -576,7 +589,8 @@ def notify(client, data):
     status_refs = [str(r.get("careContextReference")) for r in
                    ((n.get("statusNotification") or {}).get("statusResponses") or [])
                    if isinstance(r, dict) and r.get("careContextReference")]
-    transfer, _replaced = _resolve(client, n.get("transactionId") or v.pick(data, "transactionId"), status_refs)
+    transfer, _replaced = _resolve(client, n.get("transactionId") or v.pick(data, "transactionId"), status_refs,
+                                   done=_NOTIFY_DONE)
     consent_id = n.get("consentId") or v.pick(data, "consentId")
     if consent_id and transfer.consent_id and str(consent_id) != transfer.consent_id:
         # ABDM wants the consent of the transaction, which is the one it named in the health-information request (stored on

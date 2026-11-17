@@ -329,9 +329,22 @@ throughput says nothing about production), the held acknowledgement under many c
   `consent_health_data` (one row per page, which is why the gateway pushes one record per page). The gateway needs nothing from
   these tables.
 
-**The lasting fix for throughput, in i-medicus (not applied)** (`WebhookTrait`). Stop sleeping in `onRequestHipNotify`: save the
-consent id and acknowledge only; build, encrypt and push in `onHealthInformationRequest`. A notice then takes milliseconds
-instead of 17-45 s and a facility owner is no longer limited to one consent at a time. The gateway works without it.
+**The i-medicus change (17 Nov 2026, branch `feature/abdm-gateway-m1`, `WebhookTrait` + `ABDMService::ConvertRecordToFHIR`).**
+`onRequestHipNotify` no longer sleeps (5 s + 10 s) and no longer builds: it saves the consent on the care-context rows and acknowledges.
+`onHealthInformationRequest` saves the transaction on every row of the consent, saves the HIU's keys and then calls
+`ConvertRecordToFHIR`, so every record is built, encrypted and pushed with the keys of the very request that asked for it. In
+`ConvertRecordToFHIR` each record is built inside its own `try/catch`: a record with no data or one that fails is skipped (logged) and
+reported to ABDM as `ERRORED` ("No data available"), the others are still sent (`DELIVERED`); when nothing could be built, ABDM is
+told `FAILED`. The encryption log line that printed the sender private key is gone. Only checked with `php -l` and by simulation
+(`scripts/simulate_hip_flow.py --new-imedicus`); not yet run against the sandbox.
+
+Gateway side of it: the gateway trusts a live transaction and a live HIU key that the client sends (`_resolve`, `fit_encrypt`) and
+replaces them only when they are empty, unknown or already finished. Notice and request handlers of **one patient** never overlap
+(worker lanes by patient, `worker._patient_free`): a notice of the same patient overwrites the consent id on i-medicus' row while the
+request of the previous consent is still being handled, and the records then go out under another consent's transaction (the
+gateway refuses that with 403 `CARE_CONTEXT_NOT_CONSENTED`; found by the simulation: 26/30 before the lanes, 30/30 after).
+The request handler now holds a webhook call for as long as it builds the records (about 1-2 s per record): `OUTBOX_HTTP_TIMEOUT`
+(default 15) must be larger than that for the biggest consent, or the gateway sends the request again.
 
 **Consent range** (`hiu_service._range_end`). i-medicus' consent form takes a date and sends `toDate` as midnight
 (`2026-11-16T00:00:00.000Z`). ABDM then leaves out the care contexts of that day: on 16 Nov 2026 the patient's app listed only old

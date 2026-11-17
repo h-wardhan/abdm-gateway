@@ -326,3 +326,124 @@ def test_two_registered_facilities_and_no_hip_id_still_need_the_payload_to_say_w
     payload = sample("WellnessRecord")
     payload.get("organization", {}).pop("facilityId", None)
     assert client.post("/api/v1/fhir/wellness", json=payload, headers=headers).status_code == 422
+
+
+# ---- an i-medicus that builds in its request handler: its transaction and keys are right, the gateway trusts them -------------
+
+def other_notice_in_progress(flow):
+    """Another consent's notice is being handled right now (its transfer has another HIU key)."""
+    other_keys = fidelius.generate_key_material()
+    other = HipTransfer(api_client_id=HipTransfer.query.first().api_client_id, hip_id="IN0810041408",
+                        transaction_id="txn-of-another-consent", consent_id="another-consent", status=hs.TRANSFER_ACKNOWLEDGED,
+                        attempts=0, hiu_public_key=other_keys.x509_public_key_b64, hiu_nonce=other_keys.nonce_b64)
+    db.session.add(other)
+    db.session.commit()
+    begin_notice("another-consent")
+    return other
+
+
+def test_encrypt_with_the_key_of_a_live_request_is_not_replaced_by_another_notices_key(ctx, flow):
+    open_transfer(flow)
+    other_notice_in_progress(flow)
+    sender = flow.client.get("/api/v1/fhir/keys", headers=flow.auth).get_json()
+    res = flow.client.post("/api/v1/fhir/encrypt", headers=flow.auth, json={
+        "receiverPublicKey": flow.key_block["dhPublicKey"]["keyValue"], "receiverNonce": flow.key_block["nonce"],
+        "senderPrivateKey": sender["privateKey"], "senderPublicKey": sender["publicKey"], "senderNonce": sender["nonce"],
+        "plainTextData": "mine"})
+    assert res.status_code == 200
+    assert read(flow, res.get_json(), sender["nonce"]) == "mine"       # the HIU of THIS request can read it
+
+
+def test_push_and_notify_of_a_live_transaction_are_not_redirected_to_another_notices_consent(ctx, flow):
+    open_transfer(flow)
+    other = other_notice_in_progress(flow)
+    sender, encrypted = flow.encrypt("record")
+    flow.http.add(responses.POST, HIU_URL, json={}, status=200)
+    flow.http.add(responses.POST, HI_NOTIFY, json={}, status=202)
+    assert flow.push(flow.push_body(sender, encrypted, references=("CC-1",))).status_code == 200
+    assert flow.received_by_hiu()[0]["transactionId"] == TXN
+    assert flow.notify().status_code == 200
+    (n,) = flow.abdm_notifications()
+    assert n["transactionId"] == TXN and n["consentId"] == CONSENT_ID
+    assert db.session.get(HipTransfer, other.id).status == hs.TRANSFER_ACKNOWLEDGED
+
+
+def test_notify_reports_delivered_and_errored_care_contexts(ctx, flow):
+    open_transfer(flow)
+    sender, encrypted = flow.encrypt("record")
+    flow.http.add(responses.POST, HIU_URL, json={}, status=200)
+    flow.http.add(responses.POST, HI_NOTIFY, json={}, status=202)
+    assert flow.push(flow.push_body(sender, encrypted, references=("CC-1",))).status_code == 200
+    res = flow.notify(responses_=[{"careContextReference": "CC-1", "hiStatus": "DELIVERED", "description": "Data Pushed"},
+                                  {"careContextReference": "CC-2", "hiStatus": "ERRORED", "description": "No data available"}])
+    assert res.status_code == 200
+    (n,) = flow.abdm_notifications()
+    by_ref = {r["careContextReference"]: r["hiStatus"] for r in n["statusNotification"]["statusResponses"]}
+    assert n["statusNotification"]["sessionStatus"] == "TRANSFERRED" and by_ref == {"CC-1": "DELIVERED", "CC-2": "ERRORED"}
+
+
+# ---- one patient's notice and request handlers never overlap (i-medicus keeps both on one row) ------------------------------
+
+def _patient_jobs(flow):
+    """A notice job of consent c2 and a request job of CONSENT_ID, both of patient ravi@sbx; the notice of CONSENT_ID is done."""
+    flow.consent()
+    flow.hi_request()
+    notice_event = CallbackEvent.query.filter(CallbackEvent.path.like("%consent/request/hip/notify")).first()
+    request_event = CallbackEvent.query.filter(CallbackEvent.path.like("%hip/health-information/request")).first()
+    client_id = notice_event.api_client_id
+    done = engine.enqueue(oj.KIND_FORWARD_CALLBACK, callback_event_id=notice_event.id, api_client_id=client_id)
+    done.hold_consent_id, done.status = CONSENT_ID, oj.DONE
+    request = engine.enqueue(oj.KIND_FORWARD_CALLBACK, callback_event_id=request_event.id, api_client_id=client_id)
+    request.hold_consent_id = CONSENT_ID
+    second = engine.enqueue(oj.KIND_FORWARD_CALLBACK, callback_event_id=notice_event.id, api_client_id=client_id)
+    second.hold_consent_id = "c2"
+    OutboxJob.query.filter(OutboxJob.id.notin_([done.id])).filter(OutboxJob.callback_event_id.is_(None)).delete(
+        synchronize_session=False)
+    db.session.commit()
+    return request, second
+
+
+def _only(*jobs):
+    keep = [j.id for j in jobs]
+    OutboxJob.query.filter(OutboxJob.status == oj.PENDING, OutboxJob.id.notin_(keep)).delete(synchronize_session=False)
+    db.session.commit()
+
+
+def test_a_notice_waits_while_a_request_of_the_same_patient_is_being_handled(ctx, app, flow):
+    from src.app.outbox import worker
+    from tests.contract.test_m2_link_token_and_hold import FakePool
+    request, second = _patient_jobs(flow)
+    _only(request, second)
+    worker._LANES.clear()
+    pool, inflight = FakePool(), {}
+    assert worker.dispatch(app, pool, inflight, 4) == 1
+    db.session.expire_all()
+    assert db.session.get(OutboxJob, request.id).status == oj.PROCESSING
+    assert db.session.get(OutboxJob, second.id).status == oj.PENDING      # its patient's request is still running
+    for future in inflight:
+        future.finished = True
+    assert worker.dispatch(app, pool, inflight, 4) == 1                    # the request is over: the notice goes
+    db.session.expire_all()
+    assert db.session.get(OutboxJob, second.id).status == oj.PROCESSING
+
+
+def test_a_request_waits_while_another_consents_notice_of_the_same_patient_is_being_handled(ctx, app, flow):
+    from src.app.outbox import worker
+    from tests.contract.test_m2_link_token_and_hold import FakePool
+    request, second = _patient_jobs(flow)
+    _only(request, second)
+    second.status = oj.PENDING
+    db.session.commit()
+    worker._LANES.clear()
+    pool, inflight = FakePool(), {}
+    # the notice of c2 is started first (as it would be when it was due first), then the request of the other consent must wait
+    worker.dispatch(app, pool, inflight, 4)       # claims the request (notice done) and holds the notice back
+    for future in inflight:
+        future.finished = True
+    worker.dispatch(app, pool, inflight, 4)       # claims the notice of c2
+    db.session.refresh(request)
+    assert db.session.get(OutboxJob, second.id).status == oj.PROCESSING
+    request.status, request.next_attempt_at = oj.PENDING, utcnow() - timedelta(seconds=1)
+    db.session.commit()
+    worker._LANES.clear()
+    assert worker.dispatch(app, pool, inflight, 4) == 0                    # the request of CONSENT_ID waits for c2's notice

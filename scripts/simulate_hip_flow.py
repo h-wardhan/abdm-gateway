@@ -34,6 +34,7 @@ parser.add_argument("--legacy", action="store_true")
 parser.add_argument("--patients", type=int, default=10)
 parser.add_argument("--artefacts", type=int, default=3)
 parser.add_argument("--slow", type=float, default=3.0)
+parser.add_argument("--new-imedicus", action="store_true", help="i-medicus builds the records in its request handler (no sleeps in the notice handler)")
 parser.add_argument("--r-delay", type=float, default=10.0, help="seconds (real) i-medicus' request handler takes before it saves keys")
 args = parser.parse_args()
 random.seed(7)
@@ -191,16 +192,18 @@ class Imedicus(BaseHTTPRequestHandler):
             consent = body["notification"]["consentId"]
             patient = body["notification"]["consentDetail"]["patient"]["id"]
             if body["notification"]["status"] == "GRANTED":
-                time.sleep(5 * SCALE)                                 # sleep(5)
+                if not args.new_imedicus:
+                    time.sleep(5 * SCALE)                             # sleep(5)
                 with lock:
                     rows.setdefault(patient, {})["consent"] = consent  # saves the consent id on its row
                 post(base + "/consent/on-notify", {"consentId": consent, "requestId": request_id, "hipId": HIP}, client_headers)
-                time.sleep(10 * SCALE)                                # sleep(10)
-                convert(patient, consent)
-                with lock:
-                    stats["conv_done"] += 1
-                    if stats["conv_done"] >= EXPECTED:
-                        done.set()
+                if not args.new_imedicus:
+                    time.sleep(10 * SCALE)                            # sleep(10)
+                    convert(patient, consent)
+                    with lock:
+                        stats["conv_done"] += 1
+                        if stats["conv_done"] >= EXPECTED:
+                            done.set()
         elif "/hip/health-information/request" in self.path:
             consent = body["hiRequest"]["consent"]["id"]
             with lock:
@@ -219,6 +222,12 @@ class Imedicus(BaseHTTPRequestHandler):
                         "sender_sk": sender["privateKey"], "sender_pk": sender["publicKey"],
                         "sender_nonce": sender["nonce"], "expiry": km["dhPublicKey"]["expiry"],
                         "push_url": body["hiRequest"]["dataPushUrl"]}
+                if args.new_imedicus:                                 # records built here, with the keys of this very request
+                    convert(match[0], consent)
+                    with lock:
+                        stats["conv_done"] += 1
+                        if stats["conv_done"] >= EXPECTED:
+                            done.set()
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'{"status":"success"}')
@@ -304,7 +313,7 @@ with app.app_context():
 time.sleep(2 * SCALE)
 elapsed = time.time() - started
 ok = sum(1 for c in delivered if delivered[c] == 1 and abdm_notified.get(c) == 1)
-print(f"mode: {'LEGACY' if args.legacy else 'NEW (acknowledge-and-hold + delivery context)'} | {args.patients} patients x "
+print(f"mode: {'LEGACY' if args.legacy else 'NEW gateway'} + {'NEW i-medicus (build in request handler)' if args.new_imedicus else 'current i-medicus'} | {args.patients} patients x "
       f"{args.artefacts} consents = {EXPECTED} | {elapsed:.0f}s | i-medicus request handler {args.r_delay:g}s x{args.slow / 10:g}")
 print(f"consents delivered right, exactly once, and reported to ABDM: {ok}/{EXPECTED} | pushes that decrypted right: "
       f"{sum(delivered.values())} | problems: {len(wrong)}")

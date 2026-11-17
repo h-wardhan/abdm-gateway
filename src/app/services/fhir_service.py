@@ -7,9 +7,21 @@ from src.app.fhir import validate
 logger = logging.getLogger(__name__)
 
 
+def facility_of(client):
+    """The HIP id of the client's facility: the one on the client, else the only facility registered for it (a clinic registers
+    itself through ABDM's callbacks, so the client row often has none). Several facilities and none set: None, the payload's
+    own `organization.facilityId` is then used."""
+    hip_id = getattr(client, "hip_id", None)
+    if hip_id or getattr(client, "id", None) is None:
+        return hip_id
+    from src.app.models import HipRegistration  # late: models import services
+    rows = HipRegistration.query.filter_by(api_client_id=client.id, is_active=True).limit(2).all()
+    return rows[0].hip_id if len(rows) == 1 else None
+
+
 def convert(hi_type, payload, client):
     """The Bundle for one record of the client's facility (its HIP id is the Organization identifier)."""
-    bundle = fhir.build_record(hi_type, payload, hip_id=getattr(client, "hip_id", None))
+    bundle = fhir.build_record(hi_type, payload, hip_id=facility_of(client))
     logger.info("fhir: %s bundle built for client %s (%d entries)", hi_type, getattr(client, "id", None),
                 len(bundle["entry"]))
     return bundle
@@ -50,7 +62,7 @@ def legacy_prescription_payload(data, client):
 def convert_legacy_prescription(data, client):
     payload = legacy_prescription_payload(data, client)
     when = fhir.util.parse(data.get("date")) if isinstance(data, dict) else None
-    bundle = fhir.build_record("Prescription", payload, hip_id=getattr(client, "hip_id", None), when=when)
+    bundle = fhir.build_record("Prescription", payload, hip_id=facility_of(client), when=when)
     logger.info("fhir: legacy prescription bundle built for client %s (%d entries)", getattr(client, "id", None),
                 len(bundle["entry"]))
     return bundle

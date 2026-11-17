@@ -23,6 +23,7 @@ from src.app.outbox import engine
 from tests.contract.test_fhir_routes import hip_auth  # noqa: F401  (fixture)
 from tests.contract.test_m2_all_record_types import SLUGS, TYPES, build, paged  # noqa: F401
 from tests.contract.test_m2_transfer import (CONSENT_ID, HI_NOTIFY, HIU_URL, TXN, Flow, flow, hiu_dns)  # noqa: F401
+from tests.fhir.samples import sample
 
 
 @pytest.fixture
@@ -294,3 +295,34 @@ def test_notices_of_different_patients_of_one_client_go_one_at_a_time(ctx, app, 
     assert worker.dispatch(app, pool, inflight, 4) == 1               # the second waits for the first
     assert worker.dispatch(app, pool, inflight, 4) == 0
     assert sorted(OutboxJob.query.get(j.id).status for j in jobs) == ["pending", "processing"]
+
+
+# ---- a client row without a HIP id: the facility it is registered for is the Organization (wellness 422 on the sandbox) ------
+
+def test_a_record_without_facility_id_uses_the_only_facility_registered_for_the_client(client, app, fake_dns):
+    from src.app.callbacks import registry
+    from src.app.models import ApiClient
+    tenant, secret = ApiClient.create(name="clinic-without-hip-id")       # no hip_id on the client row
+    db.session.add(tenant)
+    db.session.commit()
+    registry.upsert(tenant, "IN0810041408", "https://client.example.test/api/abdm-webhook", "Clinic")
+    headers = {"Client-Id": tenant.client_id, "Client-Secret": secret}
+    payload = sample("WellnessRecord")
+    payload.get("organization", {}).pop("facilityId", None)
+    res = client.post("/api/v1/fhir/wellness", json=payload, headers=headers)
+    assert res.status_code == 200, res.get_json()
+    assert "IN0810041408" in json.dumps(res.get_json())
+
+
+def test_two_registered_facilities_and_no_hip_id_still_need_the_payload_to_say_which(client, app, fake_dns):
+    from src.app.callbacks import registry
+    from src.app.models import ApiClient
+    tenant, secret = ApiClient.create(name="clinic-two-facilities")
+    db.session.add(tenant)
+    db.session.commit()
+    registry.upsert(tenant, "IN0810041408", "https://client.example.test/api/abdm-webhook", "A")
+    registry.upsert(tenant, "IN0810041409", "https://client.example.test/api/abdm-webhook", "B")
+    headers = {"Client-Id": tenant.client_id, "Client-Secret": secret}
+    payload = sample("WellnessRecord")
+    payload.get("organization", {}).pop("facilityId", None)
+    assert client.post("/api/v1/fhir/wellness", json=payload, headers=headers).status_code == 422

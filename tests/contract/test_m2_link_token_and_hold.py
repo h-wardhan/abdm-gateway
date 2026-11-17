@@ -155,6 +155,11 @@ def test_tokens_of_two_patients_stay_apart(client, jwks, http, hip, auth):
     assert link_token_service.token_for_call(HIP_ID, "other@sbx", "client") == "client"
 
 
+@pytest.fixture(autouse=True)
+def _clear_lane_cache():
+    worker._LANES.clear()
+
+
 # ---- the consent acknowledgement waits for the health-information request ---------------------------------------------
 # i-medicus: notice -> sleeps 5 s -> saves the consent id -> acknowledges -> sleeps 10 s -> builds the records. ABDM sends the
 # request only after the acknowledgement (~14 s later). The gateway answers the acknowledgement when the request was handled.
@@ -235,76 +240,6 @@ def test_with_the_wait_off_the_ack_is_answered_at_once(app, client, jwks, http, 
     assert w.imedicus_answers("consent/on-notify", notice_ack()).status_code == 201
 
 
-# ---- the request is not left behind the worker that is busy with its notice -------------------------------------------
-
-@pytest.fixture
-def threads(monkeypatch):
-    started = []
-    monkeypatch.setattr(hip_pairing, "_spawn", lambda delay, fn, *args: started.append((delay, fn, args)))
-    return started
-
-
-def _in_flight_notice():
-    """The worker is delivering the notice: its job is `processing`."""
-    from src.app.extensions import db
-    job = next(j for j in OutboxJob.query.all()
-               if CallbackEvent.query.get(j.callback_event_id).path.endswith("consent/request/hip/notify"))
-    job.status = oj.PROCESSING
-    db.session.commit()
-    return job
-
-
-def test_a_request_is_delivered_by_a_thread_while_its_notice_is_being_delivered(threads, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
-    assert _in_flight_notice().hold_consent_id == CONSENT_ID
-    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
-    (delay, fn, args), = threads
-    assert delay > 0
-    http.add("POST", f"{CALLBACK_URL}/api/v3/hip/health-information/request", json={"status": "success"})
-    fn(*args)                                                  # the thread, after the receiver committed
-    urls = [c.request.url for c in http.calls if c.request.url.startswith(CALLBACK_URL)]
-    assert urls == [f"{CALLBACK_URL}/api/v3/hip/health-information/request"]
-    event = CallbackEvent.query.filter_by(request_id="r-h").one()
-    assert event.status == "delivered"
-
-
-def test_a_request_without_a_notice_in_flight_goes_through_the_worker(threads, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
-    assert threads == []
-    assert OutboxJob.query.one().status == oj.PENDING
-
-
-def test_a_request_of_another_consent_is_not_taken_by_a_thread(threads, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
-    _in_flight_notice()
-    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request("another-consent"), "r-h")
-    assert threads == []
-
-
-def test_the_worker_and_the_thread_never_deliver_the_same_request_twice(threads, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
-    _in_flight_notice()
-    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
-    (delay, fn, args), = threads
-    http.add("POST", f"{CALLBACK_URL}/api/v3/hip/health-information/request", json={"status": "success"})
-    assert worker.run(once=True) == 1                           # the worker was free first
-    fn(*args)                                                   # the thread finds the job already taken
-    urls = [c.request.url for c in http.calls if c.request.url == f"{CALLBACK_URL}/api/v3/hip/health-information/request"]
-    assert len(urls) == 1
-
-
-def test_rubbish_bodies_are_stored_and_queued_without_a_crash(threads, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", {"notification": "oops"}, "r-1")
-    w.abdm_calls_gateway("v3/hip/health-information/request", {"hiRequest": ["x"]}, "r-2")
-    w.abdm_calls_gateway("v3/hip/health-information/request", {"hiRequest": {"consent": "x"}}, "r-3")
-    assert OutboxJob.query.count() == 3 and threads == []
-
-
 # ---- the worker runs jobs side by side, HIP consent notices one at a time ---------------------------------------------
 
 class FakePool:
@@ -361,16 +296,6 @@ def test_two_consent_notices_never_run_together(app, client, jwks, http, hip, au
     future.finished = True
     assert worker.dispatch(app, pool, inflight, 4) == 1         # the first is done: the second may start
     assert _statuses()[second] == "processing"
-
-
-def test_the_request_runs_while_its_notice_is_in_flight(app, client, jwks, http, hip, auth):
-    w = World(client, jwks, auth)
-    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-n1")
-    pool, inflight = FakePool(), {}
-    worker.dispatch(app, pool, inflight, 4)
-    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
-    assert worker.dispatch(app, pool, inflight, 4) == 1
-    assert len(pool.submitted) == 2
 
 
 def test_the_worker_never_runs_more_jobs_than_it_has_slots(app, client, jwks, http, hip, auth):
@@ -441,3 +366,145 @@ def test_a_long_queue_of_one_patients_notices_does_not_starve_the_other_jobs(app
     assert worker.dispatch(app, pool, inflight, 4) == 2           # one of the patient's notices + the job behind them
     statuses = list(_statuses().values())
     assert statuses.count("processing") == 2 and statuses.count("pending") == 119
+
+
+
+def test_rubbish_bodies_are_stored_and_queued_without_a_crash(client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", {"notification": "oops"}, "r-1")
+    w.abdm_calls_gateway("v3/hip/health-information/request", {"hiRequest": ["x"]}, "r-2")
+    w.abdm_calls_gateway("v3/hip/health-information/request", {"hiRequest": {"consent": "x"}}, "r-3")
+    assert OutboxJob.query.count() == 3
+
+
+# ---- the gateway acknowledges a GRANTED notice itself and holds it until its request arrived ------------------------------
+# ABDM sends the HIP the health-information request only after the HIP acknowledged the notice. i-medicus acknowledges from
+# inside its notice handler, so waiting for the request there deadlocks. The gateway acknowledges at once, keeps the notice in
+# the database until the request is in, and the worker lets the request through once its notice has been running 8 s.
+
+@pytest.fixture
+def acking(app):
+    app.config["HIP_ACK_NOTICE_AT_ONCE"] = True
+    app.config["HIP_NOTICE_HOLD_SECONDS"] = 900
+    app.config["HIP_PAIR_DELAY_SECONDS"] = 8
+
+
+def _notice_job():
+    return next(j for j in OutboxJob.query.order_by(OutboxJob.id).all()
+                if CallbackEvent.query.get(j.callback_event_id).path.endswith("consent/request/hip/notify"))
+
+
+def _request_job():
+    return next(j for j in OutboxJob.query.order_by(OutboxJob.id).all()
+                if CallbackEvent.query.get(j.callback_event_id).path.endswith("hip/health-information/request"))
+
+
+def test_a_granted_notice_is_acknowledged_by_the_gateway_at_once(acking, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    (ack,) = abdm_calls(w, "consent")
+    assert json.loads(ack.body) == {"acknowledgement": {"status": "OK", "consentId": CONSENT_ID},
+                                    "response": {"requestId": "r-c"}}
+    assert ack.headers["X-HIP-ID"] == HIP_ID
+
+
+def test_i_medicus_own_acknowledgement_then_finds_it_sent_and_does_not_wait(acking, ack_wait, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    res = w.imedicus_answers("consent/on-notify", notice_ack())
+    assert res.get_json()["data"]["status"] == "already_sent"
+    assert len(abdm_calls(w, "consent")) == 1 and ack_wait == []      # one answer to ABDM, no waiting
+
+
+def test_a_notice_that_is_not_a_grant_is_neither_acknowledged_nor_held_by_the_gateway(acking, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification("REVOKED"), "r-c")
+    assert abdm_calls(w, "consent") == []
+    job = _notice_job()
+    assert job.hold_consent_id is None and as_utc(job.next_attempt_at) <= utcnow()
+
+
+def test_a_granted_notice_waits_in_the_database_for_its_request(acking, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    job = _notice_job()
+    assert job.hold_consent_id == CONSENT_ID and as_utc(job.next_attempt_at) > utcnow() + timedelta(minutes=10)
+    assert worker.run(once=True) == 0                                  # nothing due: nothing reaches i-medicus yet
+
+
+def test_its_request_releases_the_notice(acking, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
+    assert as_utc(_notice_job().next_attempt_at) <= utcnow()
+    assert _request_job().hold_consent_id == CONSENT_ID
+
+
+def test_the_request_of_another_consent_does_not_release_the_notice(acking, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request("another-consent"), "r-h")
+    assert as_utc(_notice_job().next_attempt_at) > utcnow() + timedelta(minutes=10)
+
+
+def test_a_notice_nobody_asks_for_is_delivered_when_the_hold_ends(acking, client, jwks, http, hip, auth):
+    from src.app.extensions import db
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    _notice_job().next_attempt_at = utcnow() - timedelta(seconds=1)
+    db.session.commit()
+    http.add("POST", f"{CALLBACK_URL}/api/v3/consent/request/hip/notify", json={"status": "success"})
+    assert worker.run(once=True) == 1
+    assert CallbackEvent.query.one().status == "delivered"
+
+
+def test_the_request_goes_to_i_medicus_only_after_its_notice_has_run_for_the_pair_delay(
+        acking, app, client, jwks, http, hip, auth):
+    from src.app.extensions import db
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
+    pool, inflight = FakePool(), {}
+    assert worker.dispatch(app, pool, inflight, 4) == 1               # the notice; its request must wait
+    assert _statuses()[_notice_job().id] == "processing" and _statuses()[_request_job().id] == "pending"
+    assert worker.dispatch(app, pool, inflight, 4) == 0               # the notice has just started: too early
+    _notice_job().updated_at = utcnow() - timedelta(seconds=9)        # i-medicus saved the consent id by now
+    db.session.commit()
+    assert worker.dispatch(app, pool, inflight, 4) == 1               # the request goes, beside the running notice
+    assert _statuses()[_request_job().id] == "processing"
+
+
+def test_a_request_never_goes_before_its_notice_has_started(acking, app, client, jwks, http, hip, auth):
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
+    assert worker.request_ready(CONSENT_ID) is False                  # the notice is still waiting in the queue
+
+
+def test_a_request_goes_at_once_when_its_notice_is_done_or_there_never_was_one(acking, app, client, jwks, http, hip, auth):
+    from src.app.extensions import db
+    w = World(client, jwks, auth)
+    w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(), "r-h")
+    assert worker.request_ready(CONSENT_ID) is True                   # no notice for this consent
+    w.abdm_calls_gateway("v3/consent/request/hip/notify", _consent_notification(), "r-c")
+    _notice_job().status = oj.DONE
+    db.session.commit()
+    assert worker.request_ready(CONSENT_ID) is True
+
+
+def test_requests_find_a_slot_even_when_every_other_slot_is_taken_by_notices(acking, app, client, jwks, http, hip, auth):
+    from src.app.extensions import db
+    w = World(client, jwks, auth)
+    for n, patient in enumerate(("a@sbx", "b@sbx")):
+        body = _consent_notification()
+        body["notification"]["consentId"] = body["notification"]["consentDetail"]["consentId"] = f"c-{n}"
+        body["notification"]["consentDetail"]["patient"] = {"id": patient}
+        w.abdm_calls_gateway("v3/consent/request/hip/notify", body, f"r-n{n}")
+        w.abdm_calls_gateway("v3/hip/health-information/request", hi_request(f"c-{n}"), f"r-h{n}")
+    pool, inflight = FakePool(), {}
+    assert worker.dispatch(app, pool, inflight, 2) == 2               # two notices fill the two ordinary slots
+    for job in OutboxJob.query.all():
+        if job.status == "processing":
+            job.updated_at = utcnow() - timedelta(seconds=9)
+    db.session.commit()
+    assert worker.dispatch(app, pool, inflight, 2) == 2               # both requests still start

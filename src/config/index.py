@@ -154,6 +154,13 @@ class Config:
     # HIP_KEYS_SETTLE_SECONDS to fetch its sender keys. 0 = answer at once. See services/hip_pairing.py.
     HIP_CONSENT_ACK_WAIT_SECONDS = _env_int("HIP_CONSENT_ACK_WAIT_SECONDS", 25)
     HIP_KEYS_SETTLE_SECONDS = _env_int("HIP_KEYS_SETTLE_SECONDS", 4)
+    # The gateway acknowledges a GRANTED consent notice to ABDM itself, at once (it holds the notice durably, which is all ABDM
+    # asks), keeps the notice in the database until the health-information request of that consent has arrived (at most
+    # HIP_NOTICE_HOLD_SECONDS), then delivers notice and request to i-medicus together: the request HIP_PAIR_DELAY_SECONDS after
+    # the notice started (after i-medicus saved the consent id, before it builds the records). See services/hip_pairing.py.
+    HIP_ACK_NOTICE_AT_ONCE = _env_bool("HIP_ACK_NOTICE_AT_ONCE", True)
+    HIP_NOTICE_HOLD_SECONDS = _env_int("HIP_NOTICE_HOLD_SECONDS", 900)
+    HIP_PAIR_DELAY_SECONDS = _env_int("HIP_PAIR_DELAY_SECONDS", 8)
     # acknowledgements held at once per web process (each one occupies a web thread); beyond it they are answered at once
     HIP_MAX_ACK_WAITS = _env_int("HIP_MAX_ACK_WAITS", 48)
     # Link token: how long a link call waits for the token ABDM is about to send, and how long a request for one counts
@@ -231,6 +238,8 @@ class TestingConfig(Config):
     WORKER_CONCURRENCY = 1             # the tests of the worker threads turn it on
     HIP_PUSH_ENTRIES_PER_PAGE = 0      # the tests of the paging turn it on
     HIP_CONSENT_ACK_WAIT_SECONDS = 0   # the tests of the wait turn it on
+    HIP_ACK_NOTICE_AT_ONCE = False     # the tests of the acknowledge-and-hold turn it on
+    HIP_NOTICE_HOLD_SECONDS = 0
     HIP_KEYS_SETTLE_SECONDS = 0
     HIP_LINK_TOKEN_WAIT_SECONDS = 0
     OUTBOX_BACKOFF_SECONDS = [2, 10, 60, 300, 900, 3600]
